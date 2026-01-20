@@ -43,7 +43,7 @@ python src/main.py         # Polling daemon
 
 ## Documentation
 
-- **[SPEC.md](SPEC.md)** - Complete technical specification (v2.1)
+- **[SPEC.md](SPEC.md)** - Complete technical specification (v2.2)
 - **[references/](references/)** - Battle-tested code patterns from existing skills
 
 ## Content Classification

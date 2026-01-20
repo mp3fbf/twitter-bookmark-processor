@@ -442,7 +442,7 @@ def format_notification(bookmark: Bookmark, result: ProcessResult) -> str:
 Twillot export -> data/backlog/ -> twillot_reader.py
      |
      v
-classifier.py (usa logica do twitter_reader.py)
+classifier.py (implementação própria)
      |
      +--[VIDEO]---> video_processor.py --> /youtube-video skill
      |
@@ -479,7 +479,7 @@ webhook_server.py -> 202 Accepted + {id, status}
 |------|--------|---------|
 | Video | `~/.claude/skills/youtube-video/scripts/youtube_processor.py` | `python3 {script} {url} --note -o {output_dir}` |
 | Thread | `~/.claude/skills/twitter/scripts/twitter_reader.py` | `python3 {script} {url} --thread --json` |
-| Classificacao | `~/.claude/skills/twitter/scripts/twitter_reader.py` | Reutiliza `Tweet` dataclass e `_bird_to_tweet()` |
+| Classificacao | N/A (implementação própria) | Inspirado na estrutura do twitter_reader.py |
 
 ---
 
@@ -556,7 +556,7 @@ logger.log("123", "process_error", error="timeout", retry=2)
 5. `twillot_reader.py` - Parse JSON export do Twillot
 
 ### Fase 2: Processors
-6. `classifier.py` - Reutiliza logica do twitter_reader.py
+6. `classifier.py` - Implementação própria (inspirada em twitter_reader.py)
 7. `video_processor.py` - Integra com skill existente
 8. `thread_processor.py` - Integra com skill existente
 9. `link_processor.py` - LLM extraction + cache
