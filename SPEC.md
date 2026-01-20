@@ -1,6 +1,6 @@
 # Twitter Bookmark Processor
 
-> **Versao:** 2.1 | **Ultima atualizacao:** 2026-01-20
+> **Versao:** 2.2 | **Ultima atualizacao:** 2026-01-20
 
 ## Objetivo
 
@@ -44,18 +44,23 @@ class Bookmark:
     id: str                              # Tweet ID
     url: str                             # URL completa
 
-    # Conteudo (do Tweet dataclass existente)
+    # Conteudo
     text: str
     author_username: str
     author_name: str = ""
+    author_id: Optional[str] = None      # Para deteccao de thread (reply chain)
     created_at: str = ""
+
+    # Campos para deteccao de thread
+    conversation_id: Optional[str] = None       # Se != id, faz parte de thread
+    in_reply_to_user_id: Optional[str] = None   # Se == author_id, e reply do mesmo autor
 
     # Classificacao (detectado automaticamente)
     content_type: ContentType = ContentType.TWEET
     media_urls: List[str] = field(default_factory=list)
     video_urls: List[str] = field(default_factory=list)
     links: List[str] = field(default_factory=list)
-    is_thread: bool = False
+    is_thread: bool = False              # Pode ser setado por heuristica
 
     # Metadados de processamento
     bookmarked_at: Optional[datetime] = None
@@ -71,6 +76,8 @@ class Bookmark:
 ## Regras de Classificacao
 
 **Abordagem:** Implementacao propria inspirada nos padroes do `references/twitter_reader.py`.
+
+**Nota:** O fallback ThreadReaderApp do `twitter_reader.py` (que usa `requests`) NAO sera utilizado neste projeto. Usamos apenas `httpx` para HTTP.
 
 | Tipo | Condicao | Deteccao |
 |------|----------|----------|
@@ -88,6 +95,8 @@ Threads nao vem com flag pronta - precisam ser detectadas. Estrategias:
 3. **Heuristica:** Numeros no texto como "1/", "2/", "(thread)" no inicio
 
 ```python
+import re
+
 def classify(bookmark: Bookmark) -> ContentType:
     # 1. Video nativo do Twitter
     if bookmark.video_urls:
@@ -114,14 +123,12 @@ def classify(bookmark: Bookmark) -> ContentType:
 def _is_thread(bookmark: Bookmark) -> bool:
     """Detecta se bookmark e parte de thread."""
     # Estrategia 1: conversation_id diferente do tweet_id
-    if hasattr(bookmark, 'conversation_id') and bookmark.conversation_id:
-        if bookmark.conversation_id != bookmark.id:
-            return True
+    if bookmark.conversation_id and bookmark.conversation_id != bookmark.id:
+        return True
 
     # Estrategia 2: reply do mesmo autor
-    if hasattr(bookmark, 'in_reply_to_user_id'):
-        if bookmark.in_reply_to_user_id == bookmark.author_id:
-            return True
+    if bookmark.in_reply_to_user_id and bookmark.in_reply_to_user_id == bookmark.author_id:
+        return True
 
     # Estrategia 3: heuristica textual
     thread_patterns = [r'^\d+[/\.]', r'\(thread\)', r'🧵']
@@ -142,7 +149,7 @@ def _is_thread(bookmark: Bookmark) -> bool:
 │   ├── webhook_server.py        # iOS Share Sheet endpoint (porta 8766)
 │   ├── core/
 │   │   ├── bookmark.py          # Data model (Bookmark, ContentType)
-│   │   ├── classifier.py        # Usa logica do twitter_reader.py
+│   │   ├── classifier.py        # Implementacao propria (inspirada em twitter_reader.py)
 │   │   └── state_manager.py     # JSON + file lock (fcntl)
 │   ├── sources/
 │   │   └── twillot_reader.py    # Parse Twillot JSON export
