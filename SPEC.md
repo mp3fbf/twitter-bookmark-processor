@@ -1,6 +1,6 @@
 # Twitter Bookmark Processor
 
-> **Versao:** 2.0 | **Ultima atualizacao:** 2026-01-20
+> **Versao:** 2.1 | **Ultima atualizacao:** 2026-01-20
 
 ## Objetivo
 
@@ -18,7 +18,7 @@ Sistema automatico para processar bookmarks do Twitter/X, extrair conhecimento e
 
 ## Modelo de Dados
 
-Baseado no dataclass `Tweet` existente em `twitter_reader.py` (linhas 34-54):
+Inspirado no dataclass `Tweet` do `references/twitter_reader.py`, mas com implementacao propria:
 
 ```python
 from enum import Enum
@@ -28,7 +28,7 @@ from typing import List, Optional
 
 class ContentType(str, Enum):
     VIDEO = "video"      # video_urls preenchido OU youtube.com em links
-    THREAD = "thread"    # is_thread = True
+    THREAD = "thread"    # conversation_id detectado OU reply_count > 0 do mesmo autor
     LINK = "link"        # links externos (nao twitter/youtube)
     TWEET = "tweet"      # texto simples ou com imagens
 
@@ -70,38 +70,65 @@ class Bookmark:
 
 ## Regras de Classificacao
 
-**Fonte:** Reutiliza logica do `twitter_reader.py` (funcao `_bird_to_tweet()`).
+**Abordagem:** Implementacao propria inspirada nos padroes do `references/twitter_reader.py`.
 
-| Tipo | Condicao | Campos usados |
-|------|----------|---------------|
-| VIDEO | `video_urls` preenchido OU `youtube.com`/`youtu.be` em `links` | `video_urls`, `links` |
-| THREAD | `is_thread = True` | `is_thread` |
-| LINK | `links` tem URLs externas (exceto twitter/youtube) | `links` |
-| TWEET | Nenhuma das acima (texto simples ou com imagens) | `text`, `media_urls` |
+| Tipo | Condicao | Deteccao |
+|------|----------|----------|
+| VIDEO | Video nativo OU YouTube em links | `media.type == 'video'` OU dominio youtube/youtu.be |
+| THREAD | Tweet faz parte de thread | `conversation_id` != `tweet_id` OU heuristica de reply chain |
+| LINK | Links externos (nao twitter/youtube) | Parse de `entities.urls` |
+| TWEET | Nenhuma das acima | Default |
+
+### Deteccao de Threads (importante)
+
+Threads nao vem com flag pronta - precisam ser detectadas. Estrategias:
+
+1. **Via API/bird:** Verificar se `conversation_id` difere do `tweet_id`
+2. **Via Twillot export:** Campo `in_reply_to_status_id` do mesmo autor
+3. **Heuristica:** Numeros no texto como "1/", "2/", "(thread)" no inicio
 
 ```python
-def classify(tweet: Tweet) -> ContentType:
+def classify(bookmark: Bookmark) -> ContentType:
     # 1. Video nativo do Twitter
-    if tweet.video_urls:
+    if bookmark.video_urls:
         return ContentType.VIDEO
 
     # 2. Video externo (YouTube)
-    youtube_domains = ["youtube.com", "youtu.be"]
-    if any(any(d in link for d in youtube_domains) for link in tweet.links):
+    youtube_domains = ["youtube.com", "youtu.be", "vimeo.com"]
+    if any(any(d in link for d in youtube_domains) for link in bookmark.links):
         return ContentType.VIDEO
 
-    # 3. Thread
-    if tweet.is_thread:
+    # 3. Thread (multiplas estrategias)
+    if _is_thread(bookmark):
         return ContentType.THREAD
 
     # 4. Link externo
     twitter_domains = ["twitter.com", "x.com", "t.co"]
-    external_links = [l for l in tweet.links if not any(d in l for d in twitter_domains)]
+    external_links = [l for l in bookmark.links if not any(d in l for d in twitter_domains)]
     if external_links:
         return ContentType.LINK
 
     # 5. Tweet simples
     return ContentType.TWEET
+
+def _is_thread(bookmark: Bookmark) -> bool:
+    """Detecta se bookmark e parte de thread."""
+    # Estrategia 1: conversation_id diferente do tweet_id
+    if hasattr(bookmark, 'conversation_id') and bookmark.conversation_id:
+        if bookmark.conversation_id != bookmark.id:
+            return True
+
+    # Estrategia 2: reply do mesmo autor
+    if hasattr(bookmark, 'in_reply_to_user_id'):
+        if bookmark.in_reply_to_user_id == bookmark.author_id:
+            return True
+
+    # Estrategia 3: heuristica textual
+    thread_patterns = [r'^\d+[/\.]', r'\(thread\)', r'🧵']
+    if any(re.search(p, bookmark.text, re.I) for p in thread_patterns):
+        return True
+
+    return False
 ```
 
 ---
@@ -147,30 +174,49 @@ def classify(tweet: Tweet) -> ContentType:
 
 | Parametro | Valor | Justificativa |
 |-----------|-------|---------------|
-| Workers | 4 | Balanco entre throughput e rate limits |
+| Workers | 4 | Balanco entre throughput e recursos |
 | Rate limit (YouTube) | 1 req/s | Limite da skill existente |
 | Rate limit (Twitter/bird) | 2 req/s | Evitar bloqueio |
 | Rate limit (LLM) | 5 req/s | Custo aceitavel |
-| Backpressure | Semaforo asyncio | Evita saturacao |
+
+**Nota:** Semaforo limita concorrencia, nao taxa. Para rate limiting real, usamos token bucket com sleep.
 
 ```python
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 class RateLimiter:
+    """Rate limiter real com token bucket por tipo de conteudo."""
+
     def __init__(self, max_workers: int = 4):
         self.semaphore = asyncio.Semaphore(max_workers)
-        self.rate_limits = {
-            ContentType.VIDEO: asyncio.Semaphore(1),    # 1/s
-            ContentType.THREAD: asyncio.Semaphore(2),   # 2/s
-            ContentType.LINK: asyncio.Semaphore(5),     # 5/s
-            ContentType.TWEET: asyncio.Semaphore(10),   # 10/s
+        # Intervalo minimo entre requests por tipo (em segundos)
+        self.intervals = {
+            ContentType.VIDEO: 1.0,    # 1 req/s
+            ContentType.THREAD: 0.5,   # 2 req/s
+            ContentType.LINK: 0.2,     # 5 req/s
+            ContentType.TWEET: 0.1,    # 10 req/s
+        }
+        self.last_request: dict[ContentType, float] = {}
+        self._locks: dict[ContentType, asyncio.Lock] = {
+            t: asyncio.Lock() for t in ContentType
         }
 
     @asynccontextmanager
     async def acquire(self, content_type: ContentType):
+        """Adquire slot respeitando rate limit real."""
         async with self.semaphore:
-            async with self.rate_limits[content_type]:
+            async with self._locks[content_type]:
+                # Calcula tempo de espera
+                now = time.monotonic()
+                last = self.last_request.get(content_type, 0)
+                wait_time = max(0, self.intervals[content_type] - (now - last))
+
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+
+                self.last_request[content_type] = time.monotonic()
                 yield
 ```
 
@@ -263,15 +309,17 @@ class StateManager:
 **Principio:** Qualidade > Custo. LLM e o padrao para extracao.
 
 **Estrategia:**
-1. Cache por URL (hash SHA256) - evita reprocessamento
+1. Cache por URL (hash SHA256) com TTL de 30 dias
 2. LLM (Claude Haiku) como padrao para extracao
 3. Fallback para metadata basico se LLM falhar
 
 ```python
 import hashlib
 from pathlib import Path
+from datetime import datetime, timedelta
 
 CACHE_FILE = Path("data/link_cache.json")
+CACHE_TTL_DAYS = 30
 
 class LinkProcessor:
     def __init__(self, llm_client):
@@ -281,13 +329,18 @@ class LinkProcessor:
     def _url_hash(self, url: str) -> str:
         return hashlib.sha256(url.encode()).hexdigest()[:16]
 
+    def _is_cache_valid(self, cache_entry: dict) -> bool:
+        """Verifica se entrada do cache ainda e valida (TTL)."""
+        cached_at = datetime.fromisoformat(cache_entry.get("cached_at", "2000-01-01"))
+        return datetime.now() - cached_at < timedelta(days=CACHE_TTL_DAYS)
+
     async def process(self, bookmark: Bookmark) -> ProcessResult:
         for link in bookmark.links:
             cache_key = self._url_hash(link)
 
-            # 1. Check cache
-            if cache_key in self.cache:
-                return self.cache[cache_key]
+            # 1. Check cache (com TTL)
+            if cache_key in self.cache and self._is_cache_valid(self.cache[cache_key]):
+                return self.cache[cache_key]["data"]
 
             # 2. Fetch content
             content = await self._fetch_content(link)
@@ -304,8 +357,11 @@ class LinkProcessor:
                 """
             )
 
-            # 4. Cache result
-            self.cache[cache_key] = extracted
+            # 4. Cache result (com timestamp)
+            self.cache[cache_key] = {
+                "data": extracted,
+                "cached_at": datetime.now().isoformat()
+            }
             self._save_cache()
 
             return extracted
