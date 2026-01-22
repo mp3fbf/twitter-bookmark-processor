@@ -13,7 +13,10 @@ The project processes bookmarks exported from Twillot, which already contains al
 
 **Skills used for enrichment:**
 - `youtube_processor.py` - Process YouTube videos found in bookmark links
-- `twitter_reader.py` - Optional, for fetching complete threads not in export
+- `thread_fetcher.py` - Fetch complete threads via ThreadReaderApp (from twitter-bookmarks-app)
+
+**Note:** The `twitter_reader.py` skill requires `bird` CLI which only works on Mac host.
+For thread fetching in the container, use `thread_fetcher.py` instead.
 
 ## YouTube Processor
 
@@ -104,7 +107,80 @@ result = processor.process_video(
 }
 ```
 
-## Twitter Reader
+## Thread Fetcher (Recommended for Threads)
+
+### Location
+```
+/workspace/twitter-bookmarks-app/thread_fetcher.py
+```
+
+### Requirements
+- **Backend:** ThreadReaderApp (free, no auth required)
+- **Dependencies:** `requests`, `beautifulsoup4`
+- **Works in container:** Yes
+- **Cache:** SQLite database for avoiding repeated requests
+
+### When to Use
+
+Use ThreadFetcher when:
+1. A bookmark is part of a thread but Twillot only captured the first tweet
+2. You need the complete thread context for processing
+
+### Availability
+
+ThreadReaderApp works for **~70% of threads**. It may fail when:
+- Author blocked ThreadReaderApp
+- Thread is too new (not yet indexed)
+- Account is private
+
+### Usage
+
+```python
+import sys
+sys.path.insert(0, '/workspace/twitter-bookmarks-app')
+from thread_fetcher import ThreadFetcher, ThreadResult
+
+fetcher = ThreadFetcher(cache_path='/tmp/thread_cache.db')
+
+# Fetch thread
+result = fetcher.fetch_thread(
+    first_tweet_id='1999874571806355477',
+    author='minchoi'
+)
+
+if result.success:
+    print(f"Found {len(result.tweets)} tweets")
+    for tweet in result.tweets:
+        print(f"[{tweet.position}] {tweet.text[:100]}...")
+else:
+    print(f"Failed: {result.error}")
+
+# Format for LLM prompt
+formatted = fetcher.format_thread_for_prompt(result)
+```
+
+### Output Schema
+
+```python
+@dataclass
+class ThreadTweet:
+    tweet_id: str
+    text: str
+    author: str
+    position: int  # 1, 2, 3...
+    created_at: Optional[str]
+    media_urls: List[str]
+
+@dataclass
+class ThreadResult:
+    success: bool
+    tweets: List[ThreadTweet]
+    error: Optional[str]
+    source: str  # "threadreaderapp"
+    cached: bool
+```
+
+## Twitter Reader (Mac Host Only)
 
 ### Location
 ```
@@ -113,46 +189,16 @@ result = processor.process_video(
 
 ### Requirements
 - **Primary backend:** `bird` CLI (Mac host only, uses browser cookies)
-- **Fallback 1:** ThreadReaderApp (currently blocked by Twitter)
-- **Fallback 2:** twitterapi.io (requires `TWITTER_API_KEY`)
-- **Works in container:** No (bird CLI on host only)
+- **Fallback:** twitterapi.io (requires `TWITTER_API_KEY`)
+- **Works in container:** No
 
 ### When to Use
 
-For this project, **twitter_reader.py is optional**. Use it only when:
-1. You need to fetch a complete thread not captured in Twillot export
-2. You need real-time tweet data beyond bookmarks
+Only use when ThreadFetcher fails and you have access to:
+1. Mac host with `bird` CLI installed, OR
+2. `TWITTER_API_KEY` for twitterapi.io ($0.15/1000 tweets)
 
-For bookmark processing, use the Twillot JSON directly.
-
-### Usage (if needed)
-
-```python
-import sys
-sys.path.insert(0, '/home/claude/.claude/skills/twitter/scripts')
-from twitter_reader import TwitterReader, Tweet, ThreadResult
-
-reader = TwitterReader(verbose=True)
-
-# Single tweet
-tweet = reader.read_tweet("https://x.com/user/status/123")
-
-# Thread (requires bird CLI or fallback)
-result = reader.read_thread("https://x.com/user/status/123")
-```
-
-### CLI Usage
-
-```bash
-# Single tweet
-python3 /path/to/twitter_reader.py "https://x.com/user/status/123"
-
-# Thread
-python3 /path/to/twitter_reader.py --thread "https://x.com/user/status/123"
-
-# JSON output
-python3 /path/to/twitter_reader.py --json "URL"
-```
+For most cases, prefer ThreadFetcher.
 
 ## Integration Strategy
 
@@ -174,9 +220,19 @@ python3 /path/to/twitter_reader.py --json "URL"
     ┌─────────┐  ┌──────────┐    ┌───────────┐
     │ YouTube │  │  Thread  │    │  Generic  │
     │Processor│  │ Fetcher  │    │ Processor │
-    │  (API)  │  │(optional)│    │           │
+    │ (Gemini)│  │ (TRA)    │    │  (LLM)    │
     └─────────┘  └──────────┘    └───────────┘
 ```
+
+### Thread Detection & Fetching
+
+When Twillot exports a bookmark that's part of a thread:
+
+1. **Check indicators:** `is_thread`, `conversation_id != tweet_id`, or heuristics (1/, 2/, "thread")
+2. **Try ThreadFetcher:** Free, works ~70% of the time
+3. **Fallback options:**
+   - twitterapi.io ($0.15/1000 tweets) if API key available
+   - Process only the bookmarked tweet if all else fails
 
 ### Code Example
 
@@ -224,8 +280,9 @@ def process_bookmark(bookmark: dict) -> dict:
 ## Limitations
 
 1. **YouTube videos > 3 hours:** Use `--clip` to process sections
-2. **Twitter threads:** bird CLI only works on Mac host; ThreadReaderApp blocked
+2. **Thread fetching:** ThreadReaderApp works ~70% of threads; some authors block it
 3. **Rate limits:** Gemini API has quotas; batch processing recommended
+4. **bird CLI:** Only works on Mac host (not in Docker container)
 
 ## Testing
 
