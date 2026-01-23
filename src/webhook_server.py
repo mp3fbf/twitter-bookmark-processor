@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -23,6 +24,48 @@ logger = logging.getLogger(__name__)
 
 # AppKey for storing background tasks (typed dict access)
 BACKGROUND_TASKS_KEY = web.AppKey("background_tasks", dict[str, asyncio.Task])
+
+# Regex pattern for Twitter/X status URLs
+# Matches: twitter.com/user/status/123 or x.com/user/status/456
+# Also supports mobile URLs (mobile.twitter.com) and variations
+TWITTER_URL_PATTERN = re.compile(
+    r"^https?://(?:(?:www|mobile)\.)?(?:twitter\.com|x\.com)"
+    r"/[^/]+/status/(\d+)",
+    re.IGNORECASE,
+)
+
+
+def validate_twitter_url(url: str) -> bool:
+    """Check if URL is a valid Twitter/X status URL.
+
+    Accepts URLs from twitter.com and x.com, including mobile and www subdomains.
+
+    Args:
+        url: The URL to validate.
+
+    Returns:
+        True if the URL is a valid Twitter/X status URL, False otherwise.
+    """
+    if not url:
+        return False
+    return TWITTER_URL_PATTERN.match(url) is not None
+
+
+def extract_tweet_id(url: str) -> str | None:
+    """Extract the tweet ID from a Twitter/X status URL.
+
+    Args:
+        url: A Twitter/X status URL.
+
+    Returns:
+        The tweet ID as a string, or None if the URL is invalid.
+    """
+    if not url:
+        return None
+    match = TWITTER_URL_PATTERN.match(url)
+    if match:
+        return match.group(1)
+    return None
 
 
 def get_auth_token() -> str | None:
@@ -115,6 +158,16 @@ async def process_handler(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # Validate that URL is a Twitter/X status URL
+    if not validate_twitter_url(url):
+        return web.json_response(
+            {"error": "Invalid URL - must be a Twitter/X status URL"},
+            status=400,
+        )
+
+    # Extract tweet ID for tracking
+    tweet_id = extract_tweet_id(url)
+
     # Generate a unique task ID for tracking
     task_id = str(uuid.uuid4())[:8]
 
@@ -132,10 +185,10 @@ async def process_handler(request: web.Request) -> web.Response:
         lambda t: _cleanup_task(request.app, task_id)
     )
 
-    logger.info("Spawned background task %s for URL: %s", task_id, url)
+    logger.info("Spawned background task %s for URL: %s (tweet_id=%s)", task_id, url, tweet_id)
 
     return web.json_response(
-        {"status": "accepted", "url": url, "task_id": task_id},
+        {"status": "accepted", "url": url, "task_id": task_id, "tweet_id": tweet_id},
         status=202,
     )
 

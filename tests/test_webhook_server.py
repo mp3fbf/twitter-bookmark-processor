@@ -12,8 +12,10 @@ from src.webhook_server import (
     _cleanup_task,
     _process_url_background,
     create_app,
+    extract_tweet_id,
     get_auth_token,
     get_server_info,
+    validate_twitter_url,
 )
 
 
@@ -347,3 +349,88 @@ class TestBackgroundTaskHelpers:
         assert BACKGROUND_TASKS_KEY in app
         assert isinstance(app[BACKGROUND_TASKS_KEY], dict)
         assert len(app[BACKGROUND_TASKS_KEY]) == 0
+
+
+class TestURLValidation:
+    """Test URL validation functions."""
+
+    def test_validates_twitter_url(self):
+        """validate_twitter_url should accept twitter.com and x.com URLs."""
+        # twitter.com variants
+        assert validate_twitter_url("https://twitter.com/user/status/123")
+        assert validate_twitter_url("https://www.twitter.com/user/status/123")
+        assert validate_twitter_url("https://mobile.twitter.com/user/status/123")
+        assert validate_twitter_url("http://twitter.com/user/status/456")
+
+        # x.com variants
+        assert validate_twitter_url("https://x.com/elonmusk/status/789")
+        assert validate_twitter_url("https://www.x.com/user/status/999")
+
+    def test_rejects_non_twitter_url(self):
+        """validate_twitter_url should reject non-Twitter URLs."""
+        # Other domains
+        assert not validate_twitter_url("https://facebook.com/user/status/123")
+        assert not validate_twitter_url("https://youtube.com/watch?v=abc")
+        assert not validate_twitter_url("https://example.com/twitter.com/status/123")
+
+        # Invalid Twitter URLs (not status URLs)
+        assert not validate_twitter_url("https://twitter.com/user")
+        assert not validate_twitter_url("https://twitter.com/home")
+        assert not validate_twitter_url("https://twitter.com/user/likes")
+
+        # Empty/None
+        assert not validate_twitter_url("")
+        assert not validate_twitter_url(None)
+
+    def test_extracts_tweet_id(self):
+        """extract_tweet_id should extract the numeric ID from URL."""
+        assert extract_tweet_id("https://twitter.com/user/status/123456789") == "123456789"
+        assert extract_tweet_id("https://x.com/elonmusk/status/987654321") == "987654321"
+        assert extract_tweet_id("https://mobile.twitter.com/user/status/111") == "111"
+
+        # With query params (common from sharing)
+        assert extract_tweet_id("https://twitter.com/user/status/123?s=20") == "123"
+
+        # Invalid URLs return None
+        assert extract_tweet_id("https://example.com/123") is None
+        assert extract_tweet_id("") is None
+        assert extract_tweet_id(None) is None
+
+
+class TestURLValidationEndpoint(AioHTTPTestCase):
+    """Test that /process endpoint validates URLs."""
+
+    async def get_application(self) -> web.Application:
+        """Return the application for testing."""
+        return create_app()
+
+    async def test_process_validates_twitter_url(self):
+        """POST /process with valid Twitter URL should be accepted."""
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/user/status/123456"},
+        )
+        assert resp.status == 202
+        data = await resp.json()
+        assert data["status"] == "accepted"
+
+    async def test_process_rejects_non_twitter_url(self):
+        """POST /process with non-Twitter URL should return 400."""
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://youtube.com/watch?v=abc123"},
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert "error" in data
+        assert "twitter" in data["error"].lower() or "url" in data["error"].lower()
+
+    async def test_process_extracts_tweet_id(self):
+        """POST /process should return tweet_id in response."""
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://x.com/someone/status/999888777"},
+        )
+        assert resp.status == 202
+        data = await resp.json()
+        assert data["tweet_id"] == "999888777"
