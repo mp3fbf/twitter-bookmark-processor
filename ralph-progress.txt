@@ -4,8 +4,14 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 0
-- Commits feitos: 0
+- Issues processadas: 1
+- Commits feitos: 2
 
 ## Histórico de Iterações
-(nenhuma ainda - aguardando primeira execução)
+
+## Iteração 1 - 2026-01-23
+- Issue: #10 [2.0] Exception Types
+- Ação: Implementei hierarquia de exceções com 5 classes + 19 testes
+- Arquivos: src/core/exceptions.py, tests/test_exceptions.py, .gitignore
+- Commits: 180e635, d8b7192
+- Status: completo
