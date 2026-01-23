@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 25
-- Commits feitos: 26
+- Issues processadas: 28
+- Commits feitos: 29
 
 ## Histórico de Iterações
 
@@ -204,3 +204,27 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Arquivos: src/processors/link_processor.py, tests/test_link_processor.py
 - Commit: efb0149
 - Status: completo
+
+## Iteração 28 - 2026-01-23
+- Issue: #32 [4.7] Link Template
+- Ação: Adicionei link.md.j2 template com seções Source (URL clicável), TL;DR (omite quando igual ao título), Key Points (lista), Original Context (tweet que compartilhou). Atualizei ObsidianWriter._get_template_name() para rotear LINK → link.md.j2. 6 novos testes.
+- Arquivos: src/output/templates/link.md.j2, src/output/obsidian_writer.py, tests/test_obsidian_writer.py
+- Commit: 6e3653d
+- Status: completo
+- Nota: Sprint 4 COMPLETO - próxima issue é #33 [4.8] Pipeline Link Support
+
+## Iteração 29 - 2026-01-23
+- Issue: #33 [4.8] Pipeline - Link Support
+- Ação: Integrei LinkProcessor no Pipeline. Adicionei import, registrei em _processors dict, 4 novos testes (has_link_processor, routes_link_correctly, link_e2e com mock HTTP/LLM, link_uses_cache)
+- Arquivos: src/core/pipeline.py, tests/test_pipeline.py
+- Commit: 255fac0
+- Status: completo
+- Nota: Sprint 4 COMPLETO - Pipeline agora suporta TWEET, VIDEO, THREAD, LINK
+
+## Iteração 30 - 2026-01-23
+- Issue: #34 [5.1] Rate Limiter - Core
+- Ação: Implementei token bucket rate limiter com RateLimiter class, semaphore para controle de concorrência, rates por tipo (VIDEO=1/s, LINK=5/s, THREAD=2/s, LLM=2/s), singleton pattern, mapeamento ContentType→RateType + 27 testes
+- Arquivos: src/core/rate_limiter.py, tests/test_rate_limiter.py, pyproject.toml
+- Commit: e4df1b6
+- Status: completo
+- Nota: Sprint 5 iniciado

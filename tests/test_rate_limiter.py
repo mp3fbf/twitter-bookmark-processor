@@ -329,3 +329,141 @@ class TestRateLimiterSingleton:
         reset_rate_limiter()
 
         # Should not raise
+
+
+class TestRateLimiterContextManager:
+    """Tests for async context manager methods."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_waits_if_needed(self):
+        """Context manager waits for rate limit slot."""
+        # Use slow rate to measure wait time
+        custom_rates = {
+            RateType.LINK: RateConfig(requests_per_second=10.0, max_concurrent=1),
+        }
+        limiter = RateLimiter(rates=custom_rates)
+
+        # First acquisition - should be immediate
+        start = time.monotonic()
+        async with limiter.acquire_context(RateType.LINK):
+            pass
+
+        # Second acquisition - should wait for interval (0.1s for 10/s)
+        async with limiter.acquire_context(RateType.LINK):
+            elapsed = time.monotonic() - start
+
+        # Should have waited at least the interval
+        assert elapsed >= 0.09  # Allow small tolerance
+
+    @pytest.mark.asyncio
+    async def test_acquire_releases_after_exit(self):
+        """Semaphore is released after exiting context."""
+        custom_rates = {
+            RateType.LINK: RateConfig(requests_per_second=100.0, max_concurrent=1),
+        }
+        limiter = RateLimiter(rates=custom_rates)
+
+        # Use context manager
+        async with limiter.acquire_context(RateType.LINK):
+            pass
+
+        # Should be able to acquire again immediately (semaphore released)
+        acquired = False
+
+        async def try_acquire():
+            nonlocal acquired
+            async with limiter.acquire_context(RateType.LINK):
+                acquired = True
+
+        task = asyncio.create_task(try_acquire())
+        await asyncio.sleep(0.02)  # Short wait
+
+        assert acquired is True
+        await task
+
+    @pytest.mark.asyncio
+    async def test_acquire_releases_on_exception(self):
+        """Semaphore is released even if exception occurs."""
+        custom_rates = {
+            RateType.LINK: RateConfig(requests_per_second=100.0, max_concurrent=1),
+        }
+        limiter = RateLimiter(rates=custom_rates)
+
+        # Raise exception inside context
+        with pytest.raises(ValueError):
+            async with limiter.acquire_context(RateType.LINK):
+                raise ValueError("test error")
+
+        # Should still be able to acquire (semaphore was released)
+        acquired = False
+
+        async def try_acquire():
+            nonlocal acquired
+            async with limiter.acquire_context(RateType.LINK):
+                acquired = True
+
+        task = asyncio.create_task(try_acquire())
+        await asyncio.sleep(0.02)
+
+        assert acquired is True
+        await task
+
+    @pytest.mark.asyncio
+    async def test_acquire_tracks_last_request(self):
+        """Timestamp is updated after context exit."""
+        limiter = RateLimiter()
+
+        # Initially no requests
+        stats_before = limiter.get_stats()
+        assert stats_before["video"]["last_request"] == 0
+
+        # Use context manager
+        async with limiter.acquire_context(RateType.VIDEO):
+            # Timestamp should be updated on acquire
+            pass
+
+        stats_after = limiter.get_stats()
+        assert stats_after["video"]["last_request"] > 0
+
+    @pytest.mark.asyncio
+    async def test_acquire_context_for_content_video(self):
+        """acquire_context_for_content works with VIDEO."""
+        limiter = RateLimiter()
+
+        async with limiter.acquire_context_for_content(ContentType.VIDEO):
+            # Should not raise
+            pass
+
+    @pytest.mark.asyncio
+    async def test_acquire_context_for_content_link(self):
+        """acquire_context_for_content works with LINK."""
+        limiter = RateLimiter()
+
+        async with limiter.acquire_context_for_content(ContentType.LINK):
+            # Should not raise
+            pass
+
+    @pytest.mark.asyncio
+    async def test_acquire_context_for_content_releases(self):
+        """acquire_context_for_content releases semaphore."""
+        custom_rates = {
+            RateType.THREAD: RateConfig(requests_per_second=100.0, max_concurrent=1),
+        }
+        limiter = RateLimiter(rates=custom_rates)
+
+        async with limiter.acquire_context_for_content(ContentType.THREAD):
+            pass
+
+        # Should be able to acquire again
+        acquired = False
+
+        async def try_acquire():
+            nonlocal acquired
+            async with limiter.acquire_context_for_content(ContentType.THREAD):
+                acquired = True
+
+        task = asyncio.create_task(try_acquire())
+        await asyncio.sleep(0.02)
+
+        assert acquired is True
+        await task

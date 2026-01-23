@@ -6,8 +6,10 @@ Prevents overwhelming external services (Twitter API, LLM, HTTP fetches).
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
+from typing import AsyncIterator
 
 from .bookmark import ContentType
 
@@ -170,6 +172,51 @@ class RateLimiter:
         """
         rate_type = content_type_to_rate_type(content_type)
         self.release(rate_type)
+
+    @asynccontextmanager
+    async def acquire_context(self, rate_type: RateType) -> AsyncIterator[None]:
+        """Async context manager for acquiring/releasing rate limit.
+
+        Automatically releases the slot when exiting the context,
+        even if an exception occurs.
+
+        Args:
+            rate_type: Type of rate limit to acquire.
+
+        Yields:
+            None after acquiring the rate limit slot.
+
+        Example:
+            async with limiter.acquire_context(RateType.LINK):
+                await fetch_url(url)
+        """
+        await self.acquire(rate_type)
+        try:
+            yield
+        finally:
+            self.release(rate_type)
+
+    @asynccontextmanager
+    async def acquire_context_for_content(
+        self, content_type: ContentType
+    ) -> AsyncIterator[None]:
+        """Async context manager for content-type based rate limiting.
+
+        Convenience method that maps ContentType to RateType.
+
+        Args:
+            content_type: The content type being processed.
+
+        Yields:
+            None after acquiring the rate limit slot.
+
+        Example:
+            async with limiter.acquire_context_for_content(ContentType.VIDEO):
+                await process_video(bookmark)
+        """
+        rate_type = content_type_to_rate_type(content_type)
+        async with self.acquire_context(rate_type):
+            yield
 
     def get_stats(self) -> dict[str, dict[str, float]]:
         """Get statistics about rate limiter state.
