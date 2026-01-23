@@ -1,0 +1,44 @@
+{% extends "base.md.j2" %}
+
+{% block content %}
+## Video Info
+
+{% if channel %}
+**Channel**: {{ channel }}
+{% endif %}
+{% if duration %}
+**Duration**: {{ duration }}
+{% endif %}
+{% if thumbnail %}
+
+![thumbnail]({{ thumbnail }})
+{% endif %}
+
+{% if tldr %}
+## TL;DR
+
+{{ tldr }}
+
+{% endif %}
+{% if key_points %}
+## Key Points
+
+{% for point in key_points %}
+{% if point is mapping %}
+- [{{ point.timestamp }}] {{ point.content }}
+{% else %}
+- {{ point }}
+{% endif %}
+{% endfor %}
+
+{% endif %}
+{% if transcript %}
+## Transcript
+
+{{ transcript }}
+
+{% endif %}
+---
+
+{{ body }}
+{% endblock %}

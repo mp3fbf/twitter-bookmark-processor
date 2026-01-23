@@ -580,3 +580,171 @@ class TestThreadTemplate:
 
         # Type should be thread
         assert "type: thread" in content
+
+
+class TestVideoTemplate:
+    """Tests for video-specific Jinja2 template."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def writer(self, output_dir: Path) -> ObsidianWriter:
+        """Create a writer instance."""
+        return ObsidianWriter(output_dir)
+
+    @pytest.fixture
+    def video_bookmark(self) -> Bookmark:
+        """Create a video bookmark for testing."""
+        return Bookmark(
+            id="dQw4w9WgXcQ",
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            text="Check out this video",
+            author_username="rickastley",
+            author_name="Rick Astley",
+            content_type=ContentType.VIDEO,
+            video_urls=["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+        )
+
+    @pytest.fixture
+    def video_result(self) -> ProcessResult:
+        """Create a video process result with metadata."""
+        return ProcessResult(
+            success=True,
+            title="Never Gonna Give You Up",
+            content="Full video content and notes here",
+            tags=["music", "80s"],
+            metadata={
+                "channel": "Rick Astley",
+                "duration": "3:33",
+                "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+                "tldr": "Classic 80s hit that became an internet phenomenon.",
+                "key_points": [
+                    {"timestamp": "0:00", "content": "Intro begins"},
+                    {"timestamp": "0:22", "content": "Verse 1 starts"},
+                    {"timestamp": "1:05", "content": "Chorus"},
+                ],
+                "transcript": "We're no strangers to love...",
+            },
+        )
+
+    @pytest.fixture
+    def video_result_minimal(self) -> ProcessResult:
+        """Create a minimal video process result."""
+        return ProcessResult(
+            success=True,
+            title="Simple Video",
+            content="Basic video content",
+            tags=["video"],
+            metadata={
+                "duration": "5:00",
+            },
+        )
+
+    def test_video_template_has_duration(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should display duration."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "**Duration**: 3:33" in content
+
+    def test_video_template_has_transcript_section(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should have transcript section when present."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "## Transcript" in content
+        assert "We're no strangers to love" in content
+
+    def test_video_template_embeds_thumbnail(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should embed thumbnail as image."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "![thumbnail](https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg)" in content
+
+    def test_video_template_has_channel(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should display channel name."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "**Channel**: Rick Astley" in content
+
+    def test_video_template_has_tldr(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should have TL;DR section."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "## TL;DR" in content
+        assert "Classic 80s hit" in content
+
+    def test_video_template_has_key_points_with_timestamps(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video template should show key points with timestamps."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "## Key Points" in content
+        assert "[0:00] Intro begins" in content
+        assert "[0:22] Verse 1 starts" in content
+        assert "[1:05] Chorus" in content
+
+    def test_video_template_uses_video_type_in_frontmatter(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result: ProcessResult,
+    ):
+        """Video frontmatter should have type: video."""
+        output_path = writer.write(video_bookmark, video_result)
+        content = output_path.read_text()
+
+        assert "type: video" in content
+
+    def test_video_template_omits_sections_when_empty(
+        self,
+        writer: ObsidianWriter,
+        video_bookmark: Bookmark,
+        video_result_minimal: ProcessResult,
+    ):
+        """Video template should omit sections when data is not present."""
+        output_path = writer.write(video_bookmark, video_result_minimal)
+        content = output_path.read_text()
+
+        # Should NOT have these sections
+        assert "## Transcript" not in content
+        assert "## Key Points" not in content
+        assert "![thumbnail]" not in content
+        # But should still have duration
+        assert "**Duration**: 5:00" in content

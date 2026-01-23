@@ -167,7 +167,9 @@ class ObsidianWriter:
         # Map content type to template
         if bookmark.content_type == ContentType.THREAD:
             return "thread.md.j2"
-        # Future: video.md.j2, link.md.j2
+        if bookmark.content_type == ContentType.VIDEO:
+            return "video.md.j2"
+        # Future: link.md.j2
         return "tweet.md.j2"
 
     def _render_template(
