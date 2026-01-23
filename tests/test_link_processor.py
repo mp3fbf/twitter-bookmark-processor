@@ -444,3 +444,220 @@ class TestMetadata:
 
             assert "raw_text" in result.metadata
             assert len(result.metadata["raw_text"]) > 0
+
+
+class TestLLMExtraction:
+    """Tests for LLM-based content extraction."""
+
+    @pytest.fixture
+    def mock_llm_client(self):
+        """Create a mock LLM client."""
+        mock = MagicMock()
+        mock.extract_structured = MagicMock(return_value={
+            "title": "Python Async Deep Dive",
+            "tldr": "This article covers async programming in Python. It explains await and event loops.",
+            "key_points": [
+                "Async functions pause at await",
+                "Event loop manages concurrency",
+                "Use asyncio.gather for parallel tasks"
+            ],
+            "tags": ["python", "async", "programming"]
+        })
+        return mock
+
+    @pytest.fixture
+    def processor_with_llm(self, mock_llm_client):
+        """Create a LinkProcessor with mocked LLM client."""
+        return LinkProcessor(timeout=10, llm_client=mock_llm_client)
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_title(self, processor_with_llm, link_bookmark, sample_html):
+        """LLM-extracted title is used when available."""
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor_with_llm.process(link_bookmark)
+
+            assert result.success is True
+            assert result.title == "Python Async Deep Dive"
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_tldr(self, processor_with_llm, link_bookmark, sample_html):
+        """TL;DR is extracted and included in content."""
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor_with_llm.process(link_bookmark)
+
+            assert result.success is True
+            # TL;DR should be in content
+            assert "TL;DR" in result.content
+            assert "async programming" in result.content.lower()
+            # TL;DR should be in metadata
+            assert result.metadata.get("tldr")
+            assert "async programming" in result.metadata["tldr"].lower()
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_key_points(self, processor_with_llm, link_bookmark, sample_html):
+        """Key points are extracted and included in content."""
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor_with_llm.process(link_bookmark)
+
+            assert result.success is True
+            # Key points should be in content
+            assert "Key Points" in result.content
+            assert "Async functions pause at await" in result.content
+            # Key points should be in metadata
+            assert result.metadata.get("key_points")
+            assert len(result.metadata["key_points"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_extract_returns_tags(self, processor_with_llm, link_bookmark, sample_html):
+        """Tags are extracted from LLM."""
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor_with_llm.process(link_bookmark)
+
+            assert result.success is True
+            assert result.tags == ["python", "async", "programming"]
+
+    @pytest.mark.asyncio
+    async def test_extract_handles_malformed_response(self, link_bookmark, sample_html):
+        """Graceful fallback when LLM returns non-JSON or invalid structure."""
+        from src.core.exceptions import ExtractionError
+
+        mock_llm = MagicMock()
+        mock_llm.extract_structured = MagicMock(side_effect=ExtractionError("Invalid JSON"))
+
+        processor = LinkProcessor(timeout=10, llm_client=mock_llm)
+
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor.process(link_bookmark)
+
+            # Should still succeed with fallback values
+            assert result.success is True
+            # Title falls back to HTML extraction
+            assert result.title is not None
+            # Tags should be empty (no LLM extraction)
+            assert result.tags == []
+
+    @pytest.mark.asyncio
+    async def test_extract_handles_no_llm_client(self, processor, link_bookmark, sample_html):
+        """Graceful fallback when no LLM client is available."""
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock get_llm_client to raise an error (no API key configured)
+        with patch("src.processors.link_processor.create_client", return_value=mock_client), \
+             patch("src.processors.link_processor.get_llm_client", side_effect=Exception("No API key")):
+            result = await processor.process(link_bookmark)
+
+            # Should still succeed with fallback values
+            assert result.success is True
+            assert result.title is not None
+            assert result.tags == []
+
+
+class TestLLMResponseValidation:
+    """Tests for LLM response validation and sanitization."""
+
+    def test_validates_title_max_length(self):
+        """Title is truncated to max 100 characters."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "title": "x" * 150  # Too long
+        })
+        assert len(result.get("title", "")) <= 100
+
+    def test_validates_tldr_max_length(self):
+        """TL;DR is truncated to max 500 characters."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "tldr": "x" * 600  # Too long
+        })
+        assert len(result.get("tldr", "")) <= 500
+
+    def test_validates_key_points_max_5(self):
+        """Key points are limited to 5."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "key_points": ["point"] * 10  # Too many
+        })
+        assert len(result.get("key_points", [])) <= 5
+
+    def test_validates_tags_lowercase(self):
+        """Tags are converted to lowercase."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "tags": ["Python", "ASYNC", "Web"]
+        })
+        assert result.get("tags") == ["python", "async", "web"]
+
+    def test_validates_tags_strips_hash(self):
+        """Tags have # prefix stripped."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "tags": ["#python", "#async", "web"]
+        })
+        assert result.get("tags") == ["python", "async", "web"]
+
+    def test_handles_invalid_types(self):
+        """Invalid types are handled gracefully."""
+        processor = LinkProcessor()
+        result = processor._validate_llm_response({
+            "title": 123,  # Not a string
+            "tldr": ["not", "a", "string"],  # Not a string
+            "key_points": "not a list",  # Not a list
+            "tags": {"invalid": "dict"}  # Not a list
+        })
+        # Invalid types should not be included
+        assert "title" not in result
+        assert "tldr" not in result
+        assert "key_points" not in result
+        assert "tags" not in result

@@ -1,18 +1,21 @@
 """Link processor for URL content extraction.
 
 Processes bookmarks classified as LINK content type.
-Fetches URLs and extracts clean text content.
+Fetches URLs and extracts clean text content, then uses LLM
+to extract structured information (title, TL;DR, key points, tags).
 """
 
 import re
 import time
 from html.parser import HTMLParser
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
 import httpx
 
+from src.core.exceptions import ExtractionError
 from src.core.http_client import create_client
+from src.core.llm_client import LLMClient, get_llm_client
 from src.processors.base import BaseProcessor, ProcessResult
 
 if TYPE_CHECKING:
@@ -59,20 +62,49 @@ class HTMLTextExtractor(HTMLParser):
 class LinkProcessor(BaseProcessor):
     """Processor for link/article content.
 
-    Fetches URLs and extracts clean text content for further processing.
-    Does NOT use LLM - that's handled by issue #29.
+    Fetches URLs and extracts clean text content, then uses LLM
+    to extract structured information (title, TL;DR, key points, tags).
     """
 
     # Default timeout for fetching URLs
     DEFAULT_TIMEOUT = 30
 
-    def __init__(self, timeout: Optional[int] = None):
+    # System prompt for LLM extraction
+    EXTRACTION_PROMPT = """You are analyzing web page content. Extract the following information:
+
+1. title: A clear, descriptive title for the article (max 10 words)
+2. tldr: A 2-3 sentence summary of the main points
+3. key_points: 3-5 bullet points capturing the key insights
+4. tags: 3-5 relevant topic tags (lowercase, no # symbol)
+
+Return your response as a JSON object with these exact keys.
+
+Example response:
+{
+  "title": "Understanding Python Async Programming",
+  "tldr": "This article explains async/await in Python. It covers the event loop, coroutines, and practical patterns for concurrent code.",
+  "key_points": [
+    "Async functions use await to pause execution",
+    "The event loop manages concurrent tasks",
+    "asyncio.gather runs multiple coroutines in parallel"
+  ],
+  "tags": ["python", "async", "concurrency", "programming"]
+}"""
+
+    def __init__(
+        self,
+        timeout: Optional[int] = None,
+        llm_client: Optional[LLMClient] = None,
+    ):
         """Initialize link processor.
 
         Args:
             timeout: Fetch timeout in seconds (default: 30)
+            llm_client: Optional LLMClient for content extraction. If not provided,
+                       will try to use global singleton (fails gracefully if unavailable).
         """
         self.timeout = timeout or self.DEFAULT_TIMEOUT
+        self._llm_client = llm_client
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a link bookmark by fetching and extracting content.
@@ -102,11 +134,22 @@ class LinkProcessor(BaseProcessor):
             # Extract text from HTML
             text = self._extract_text(html)
 
-            # Extract title
-            title = self._extract_title(html) or self._generate_title(text)
+            # Extract title from HTML (fallback)
+            html_title = self._extract_title(html) or self._generate_title(text)
 
-            # Format content
-            content = self._format_content(bookmark, link_url, text)
+            # Use LLM to extract structured content
+            llm_data = self._extract_with_llm(text)
+
+            # Use LLM title if available, otherwise fallback to HTML title
+            title = llm_data.get("title") or html_title
+
+            # Get LLM-extracted fields with fallbacks
+            tldr = llm_data.get("tldr", "")
+            key_points = llm_data.get("key_points", [])
+            tags = llm_data.get("tags", [])
+
+            # Format content with LLM-enhanced data
+            content = self._format_content(bookmark, link_url, text, tldr, key_points)
 
             duration_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -114,11 +157,13 @@ class LinkProcessor(BaseProcessor):
                 success=True,
                 content=content,
                 title=title,
-                tags=[],  # Tags will be extracted by LLM in issue #29
+                tags=tags,
                 duration_ms=duration_ms,
                 metadata={
                     "source_url": link_url,
                     "raw_text": text,
+                    "tldr": tldr,
+                    "key_points": key_points,
                 },
             )
 
@@ -274,13 +319,99 @@ class LinkProcessor(BaseProcessor):
             return title
         return "Untitled Link"
 
-    def _format_content(self, bookmark: "Bookmark", url: str, text: str) -> str:
+    def _extract_with_llm(self, text: str) -> dict[str, Any]:
+        """Extract structured content using LLM.
+
+        Args:
+            text: Raw text content from web page
+
+        Returns:
+            Dict with title, tldr, key_points, tags (empty values if LLM unavailable)
+        """
+        if not text or len(text.strip()) < 50:
+            # Not enough content to analyze
+            return {}
+
+        # Get LLM client (use injected or global singleton)
+        llm_client = self._llm_client
+        if llm_client is None:
+            try:
+                llm_client = get_llm_client()
+            except Exception:
+                # LLM not available (no API key, etc.) - return empty
+                return {}
+
+        # Truncate text to avoid token limits (first 4000 chars)
+        truncated_text = text[:4000]
+        if len(text) > 4000:
+            truncated_text += "\n\n[Content truncated...]"
+
+        try:
+            result = llm_client.extract_structured(truncated_text, self.EXTRACTION_PROMPT)
+            return self._validate_llm_response(result)
+        except ExtractionError:
+            # LLM extraction failed - return empty (graceful degradation)
+            return {}
+
+    def _validate_llm_response(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Validate and sanitize LLM response.
+
+        Args:
+            result: Raw dict from LLM
+
+        Returns:
+            Sanitized dict with validated fields
+        """
+        validated: dict[str, Any] = {}
+
+        # Validate title (string, max 100 chars)
+        title = result.get("title")
+        if isinstance(title, str) and title.strip():
+            validated["title"] = title.strip()[:100]
+
+        # Validate tldr (string, max 500 chars)
+        tldr = result.get("tldr")
+        if isinstance(tldr, str) and tldr.strip():
+            validated["tldr"] = tldr.strip()[:500]
+
+        # Validate key_points (list of strings, max 5)
+        key_points = result.get("key_points")
+        if isinstance(key_points, list):
+            valid_points = [
+                str(p).strip()[:200]
+                for p in key_points
+                if isinstance(p, str) and p.strip()
+            ]
+            validated["key_points"] = valid_points[:5]
+
+        # Validate tags (list of strings, max 5, lowercase)
+        tags = result.get("tags")
+        if isinstance(tags, list):
+            valid_tags = [
+                str(t).strip().lower().lstrip("#")[:30]
+                for t in tags
+                if isinstance(t, str) and t.strip()
+            ]
+            validated["tags"] = valid_tags[:5]
+
+        return validated
+
+    def _format_content(
+        self,
+        bookmark: "Bookmark",
+        url: str,
+        text: str,
+        tldr: str = "",
+        key_points: list[str] | None = None,
+    ) -> str:
         """Format link content as markdown.
 
         Args:
             bookmark: Original bookmark
             url: Fetched URL
             text: Extracted text content
+            tldr: LLM-generated TL;DR summary
+            key_points: LLM-generated key points
 
         Returns:
             Formatted markdown content
@@ -290,6 +421,19 @@ class LinkProcessor(BaseProcessor):
         # Source info
         lines.append(f"**Source**: [{url}]({url})")
         lines.append("")
+
+        # TL;DR if available
+        if tldr:
+            lines.append("### TL;DR")
+            lines.append(tldr)
+            lines.append("")
+
+        # Key points if available
+        if key_points:
+            lines.append("### Key Points")
+            for point in key_points:
+                lines.append(f"- {point}")
+            lines.append("")
 
         # Tweet context if available
         if bookmark.text:

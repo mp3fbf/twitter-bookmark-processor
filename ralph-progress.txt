@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 21
-- Commits feitos: 22
+- Issues processadas: 23
+- Commits feitos: 24
 
 ## Histórico de Iterações
 
@@ -167,3 +167,19 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: 792aea3
 - Status: completo
 - Nota: Issue #22 continua pulada (high-risk, requer LLM client - issue #28)
+
+## Iteração 23 - 2026-01-23
+- Issue: #28 [4.3] LLM Client Setup
+- Ação: Implementei LLMClient com Claude 3 Haiku para extração de conteúdo, singleton pattern (get_llm_client/reset_llm_client), extract_structured() com parsing de JSON em code blocks, handling de erros de API + 18 testes. Adicionei ExtractionError às exceptions.
+- Arquivos: src/core/llm_client.py, src/core/exceptions.py, tests/test_llm_client.py
+- Commit: 9eea684
+- Status: completo
+- Nota: Issue #22 agora pode ser implementada (LLM client disponível)
+
+## Iteração 24 - 2026-01-23
+- Issue: #22 [3.4] Thread Processor - Content Formatting
+- Ação: Adicionei LLM-based key_points extraction ao ThreadProcessor usando LLMClient. Graceful degradation quando LLM não disponível. 7 novos testes para formatação de conteúdo e edge cases.
+- Arquivos: src/processors/thread_processor.py, tests/test_thread_processor.py
+- Commit: 38ccbaf
+- Status: completo
+- Nota: Sprint 3 agora COMPLETO (issue #22 era a última pendência)
