@@ -6,6 +6,7 @@ Calls the /youtube-video skill via subprocess to extract content.
 
 import asyncio
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -31,13 +32,15 @@ class VideoProcessor(BaseProcessor):
     # Default timeout for skill execution (5 minutes for long videos)
     DEFAULT_TIMEOUT = 300
 
-    def __init__(self, timeout: Optional[int] = None):
+    def __init__(self, timeout: Optional[int] = None, output_dir: Optional[Path] = None):
         """Initialize video processor.
 
         Args:
             timeout: Skill execution timeout in seconds (default: 300)
+            output_dir: Directory where skill should save generated .md files
         """
         self.timeout = timeout or self.DEFAULT_TIMEOUT
+        self.output_dir = output_dir
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a video bookmark by calling the youtube-video skill.
@@ -62,11 +65,12 @@ class VideoProcessor(BaseProcessor):
 
         try:
             # Call skill and get JSON output
-            result = await self._call_skill(youtube_url)
+            data, output_file = await self._call_skill(youtube_url)
 
             # Parse output into ProcessResult
-            process_result = self._parse_skill_output(result)
+            process_result = self._parse_skill_output(data)
             process_result.duration_ms = int((time.perf_counter() - start_time) * 1000)
+            process_result.output_file = output_file
 
             return process_result
 
@@ -115,14 +119,14 @@ class VideoProcessor(BaseProcessor):
 
         return None
 
-    async def _call_skill(self, url: str) -> dict:
+    async def _call_skill(self, url: str) -> tuple[dict, Optional[Path]]:
         """Call the youtube-video skill via subprocess.
 
         Args:
             url: YouTube URL to process
 
         Returns:
-            Parsed JSON output from skill
+            Tuple of (parsed JSON output, path to generated file if any)
 
         Raises:
             SkillError: If skill execution fails
@@ -134,6 +138,10 @@ class VideoProcessor(BaseProcessor):
             url,
             "--json",
         ]
+
+        # If output_dir specified, ask skill to save file there
+        if self.output_dir:
+            cmd.extend(["-o", str(self.output_dir)])
 
         # Run subprocess in thread pool to not block event loop
         loop = asyncio.get_event_loop()
@@ -156,9 +164,35 @@ class VideoProcessor(BaseProcessor):
 
         # Parse JSON output
         try:
-            return json.loads(result.stdout)
+            data = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             raise SkillError(f"Failed to parse skill output: {e}")
+
+        # Extract generated file path from stderr (format: "Saved: /path/to/file.md")
+        output_file = self._extract_output_file(result.stderr)
+
+        return data, output_file
+
+    def _extract_output_file(self, stderr: str) -> Optional[Path]:
+        """Extract generated file path from skill stderr.
+
+        The skill outputs "Saved: /path/to/file.md" to stderr when saving.
+
+        Args:
+            stderr: Stderr output from skill
+
+        Returns:
+            Path to generated file if found, None otherwise
+        """
+        if not stderr:
+            return None
+
+        match = re.search(r"Saved:\s*(.+\.(?:md|json))", stderr)
+        if match:
+            path = Path(match.group(1).strip())
+            if path.exists():
+                return path
+        return None
 
     def _parse_skill_output(self, data: dict) -> ProcessResult:
         """Parse skill JSON output into ProcessResult.

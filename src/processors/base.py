@@ -6,6 +6,7 @@ and the ProcessResult dataclass for standardized processing output.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class ProcessResult:
         tags: List of extracted tags
         error: Error message if success is False
         duration_ms: Processing time in milliseconds
+        output_file: Path to generated file (if skill generates one)
     """
 
     success: bool
@@ -34,6 +36,7 @@ class ProcessResult:
     tags: list[str] = field(default_factory=list)
     error: Optional[str] = None
     duration_ms: int = 0
+    output_file: Optional[Path] = None
 
 
 class BaseProcessor(ABC):
