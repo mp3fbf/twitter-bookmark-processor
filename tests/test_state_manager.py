@@ -1,7 +1,10 @@
 """Tests for StateManager."""
 
 import json
+import threading
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 from src.core.bookmark import ProcessingStatus
 from src.core.state_manager import StateManager
@@ -238,3 +241,109 @@ class TestStateManagerStats:
         assert stats["total"] == 0
         assert stats["done"] == 0
         assert stats["error"] == 0
+
+
+class TestAtomicWrites:
+    """Test atomic write functionality (temp file + rename pattern)."""
+
+    def test_atomic_write_creates_temp_first(self, tmp_path: Path):
+        """Verify that save() uses temp file pattern (write to temp, then rename)."""
+        state_file = tmp_path / "state.json"
+        manager = StateManager(state_file)
+        # Pre-load to avoid extra save during mark_processed
+        manager.load()
+
+        temp_files_seen: list[str] = []
+
+        original_mkstemp = __import__("tempfile").mkstemp
+
+        def tracking_mkstemp(*args, **kwargs):
+            fd, path = original_mkstemp(*args, **kwargs)
+            temp_files_seen.append(path)
+            return fd, path
+
+        with patch("tempfile.mkstemp", side_effect=tracking_mkstemp):
+            manager.mark_processed("123", ProcessingStatus.DONE)
+
+        # Verify temp file was created (exactly one for this save)
+        assert len(temp_files_seen) == 1
+        # Temp file should have been renamed (no longer exists)
+        assert not Path(temp_files_seen[0]).exists()
+        # Final file should exist with correct content
+        assert state_file.exists()
+        with open(state_file) as f:
+            data = json.load(f)
+        assert "123" in data["processed"]
+
+    def test_concurrent_writes_no_corruption(self, tmp_path: Path):
+        """Simulate concurrent writes and verify no data corruption."""
+        state_file = tmp_path / "state.json"
+        num_threads = 10
+        writes_per_thread = 5
+        errors: list[Exception] = []
+
+        def writer(thread_id: int):
+            try:
+                manager = StateManager(state_file)
+                for i in range(writes_per_thread):
+                    bookmark_id = f"thread{thread_id}_item{i}"
+                    manager.mark_processed(bookmark_id, ProcessingStatus.DONE)
+                    time.sleep(0.001)  # Small delay to increase contention
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(i,)) for i in range(num_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # No errors during concurrent writes
+        assert len(errors) == 0, f"Errors during concurrent writes: {errors}"
+
+        # Verify file is valid JSON
+        with open(state_file) as f:
+            data = json.load(f)
+
+        # Verify all writes were recorded (may be less due to race conditions
+        # in reading state, but file should never be corrupted)
+        assert "processed" in data
+        assert data["last_updated"] is not None
+
+        # Count how many items were successfully persisted
+        # Due to read-modify-write races, some may be lost, but the file
+        # should always be valid and contain at least some entries
+        total_persisted = len(data["processed"])
+        assert total_persisted > 0, "At least some items should be persisted"
+
+    def test_lock_file_created(self, tmp_path: Path):
+        """Verify .lock file exists during write operations."""
+        state_file = tmp_path / "state.json"
+        lock_file = tmp_path / "state.lock"
+        manager = StateManager(state_file)
+
+        # Lock file may not exist before first write
+        # but should exist after (we keep it around for reuse)
+        manager.mark_processed("123", ProcessingStatus.DONE)
+
+        # Lock file should exist after write
+        assert lock_file.exists(), "Lock file should exist after write operation"
+
+    def test_atomic_write_cleanup_on_failure(self, tmp_path: Path):
+        """Verify temp files are cleaned up when write fails."""
+        state_file = tmp_path / "state.json"
+        manager = StateManager(state_file)
+        manager.load()
+
+        # Force json.dump to fail
+        with patch("json.dump", side_effect=ValueError("Simulated failure")):
+            try:
+                manager.save()
+            except ValueError:
+                pass
+
+        # No temp files should be left behind
+        temp_files = list(tmp_path.glob(".state_*.tmp"))
+        assert len(temp_files) == 0, f"Temp files not cleaned up: {temp_files}"

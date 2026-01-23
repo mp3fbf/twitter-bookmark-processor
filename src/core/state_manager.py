@@ -2,12 +2,19 @@
 
 Tracks which bookmarks have been processed to avoid reprocessing.
 State is persisted to a JSON file for durability across restarts.
+
+Uses atomic writes (temp file + rename) and file locking (fcntl) to ensure
+data integrity even under concurrent access or unexpected interruptions.
 """
 
+import fcntl
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from src.core.bookmark import ProcessingStatus
 
@@ -29,8 +36,28 @@ class StateManager:
             state_file: Path to the JSON file for state persistence.
         """
         self.state_file = Path(state_file)
+        self._lock_file = self.state_file.with_suffix(".lock")
         self._state: dict[str, Any] = {}
         self._loaded = False
+
+    @contextmanager
+    def _file_lock(self) -> Generator[None, None, None]:
+        """Acquire an exclusive file lock for write operations.
+
+        Uses fcntl.flock for POSIX-compatible file locking.
+        The lock file is created next to the state file.
+
+        Yields:
+            None - just holds the lock during the context.
+        """
+        self._lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(self._lock_file), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
     def _ensure_loaded(self) -> None:
         """Load state from file if not already loaded."""
@@ -65,7 +92,10 @@ class StateManager:
         return self._state
 
     def save(self) -> None:
-        """Save current state to JSON file.
+        """Save current state to JSON file atomically.
+
+        Uses file locking and atomic write (temp file + rename) to ensure
+        data integrity under concurrent access and system failures.
 
         Creates parent directories if they don't exist.
         """
@@ -74,8 +104,23 @@ class StateManager:
         # Ensure parent directory exists
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(self._state, f, indent=2, ensure_ascii=False)
+        with self._file_lock():
+            # Write to temp file first, then atomically rename
+            fd, temp_path = tempfile.mkstemp(
+                dir=self.state_file.parent,
+                prefix=".state_",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._state, f, indent=2, ensure_ascii=False)
+                # Atomic rename - ensures file is never partially written
+                os.replace(temp_path, self.state_file)
+            except Exception:
+                # Clean up temp file on failure
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
 
     def is_processed(self, bookmark_id: str) -> bool:
         """Check if a bookmark has been processed.
