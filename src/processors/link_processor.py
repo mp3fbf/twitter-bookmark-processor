@@ -15,6 +15,7 @@ import httpx
 
 from src.core.exceptions import ExtractionError
 from src.core.http_client import create_client
+from src.core.link_cache import LinkCache
 from src.core.llm_client import LLMClient, get_llm_client
 from src.processors.base import BaseProcessor, ProcessResult
 
@@ -95,6 +96,7 @@ Example response:
         self,
         timeout: Optional[int] = None,
         llm_client: Optional[LLMClient] = None,
+        cache: Optional[LinkCache] = None,
     ):
         """Initialize link processor.
 
@@ -102,9 +104,12 @@ Example response:
             timeout: Fetch timeout in seconds (default: 30)
             llm_client: Optional LLMClient for content extraction. If not provided,
                        will try to use global singleton (fails gracefully if unavailable).
+            cache: Optional LinkCache for caching LLM extraction results.
+                   If provided, will check cache before calling LLM.
         """
         self.timeout = timeout or self.DEFAULT_TIMEOUT
         self._llm_client = llm_client
+        self._cache = cache
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a link bookmark by fetching and extracting content.
@@ -137,8 +142,8 @@ Example response:
             # Extract title from HTML (fallback)
             html_title = self._extract_title(html) or self._generate_title(text)
 
-            # Use LLM to extract structured content
-            llm_data = self._extract_with_llm(text)
+            # Use LLM to extract structured content (checks cache first)
+            llm_data = self._extract_with_llm(text, url=link_url)
 
             # Use LLM title if available, otherwise fallback to HTML title
             title = llm_data.get("title") or html_title
@@ -319,11 +324,14 @@ Example response:
             return title
         return "Untitled Link"
 
-    def _extract_with_llm(self, text: str) -> dict[str, Any]:
+    def _extract_with_llm(self, text: str, url: Optional[str] = None) -> dict[str, Any]:
         """Extract structured content using LLM.
+
+        Checks cache first if available. Caches successful extractions.
 
         Args:
             text: Raw text content from web page
+            url: URL being processed (used as cache key)
 
         Returns:
             Dict with title, tldr, key_points, tags (empty values if LLM unavailable)
@@ -331,6 +339,12 @@ Example response:
         if not text or len(text.strip()) < 50:
             # Not enough content to analyze
             return {}
+
+        # Check cache first if available and URL is provided
+        if self._cache is not None and url:
+            cached_data = self._cache.get(url)
+            if cached_data is not None:
+                return cached_data
 
         # Get LLM client (use injected or global singleton)
         llm_client = self._llm_client
@@ -348,7 +362,13 @@ Example response:
 
         try:
             result = llm_client.extract_structured(truncated_text, self.EXTRACTION_PROMPT)
-            return self._validate_llm_response(result)
+            validated = self._validate_llm_response(result)
+
+            # Cache the validated result if cache is available and URL is provided
+            if self._cache is not None and url and validated:
+                self._cache.set(url, validated)
+
+            return validated
         except ExtractionError:
             # LLM extraction failed - return empty (graceful degradation)
             return {}

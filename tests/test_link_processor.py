@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from src.core.bookmark import Bookmark, ContentType
+from src.core.link_cache import LinkCache
 from src.processors.link_processor import HTMLTextExtractor, LinkProcessor
 
 
@@ -661,3 +662,127 @@ class TestLLMResponseValidation:
         assert "tldr" not in result
         assert "key_points" not in result
         assert "tags" not in result
+
+
+class TestCacheIntegration:
+    """Tests for cache integration in LinkProcessor."""
+
+    @pytest.fixture
+    def temp_cache_file(self, tmp_path):
+        """Create a temporary cache file path."""
+        return tmp_path / "link_cache.json"
+
+    @pytest.fixture
+    def link_cache(self, temp_cache_file):
+        """Create a LinkCache instance."""
+        return LinkCache(temp_cache_file)
+
+    @pytest.fixture
+    def mock_llm_client(self):
+        """Create a mock LLM client."""
+        mock = MagicMock()
+        mock.extract_structured = MagicMock(return_value={
+            "title": "Cached Article Title",
+            "tldr": "This is a cached summary.",
+            "key_points": ["Point 1", "Point 2"],
+            "tags": ["cached", "test"]
+        })
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_processor_checks_cache_first(self, link_bookmark, sample_html, link_cache):
+        """Cache hit → LLM not called."""
+        # Pre-populate cache
+        cached_data = {
+            "title": "Pre-cached Title",
+            "tldr": "Pre-cached summary.",
+            "key_points": ["Pre-cached point"],
+            "tags": ["precached"]
+        }
+        link_cache.set("https://example.com/article", cached_data)
+
+        # Create processor with cache but also with LLM client to verify it's NOT called
+        mock_llm = MagicMock()
+        mock_llm.extract_structured = MagicMock(return_value={
+            "title": "LLM Title",
+            "tldr": "LLM summary.",
+            "key_points": ["LLM point"],
+            "tags": ["llm"]
+        })
+
+        processor = LinkProcessor(timeout=10, llm_client=mock_llm, cache=link_cache)
+
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor.process(link_bookmark)
+
+            assert result.success is True
+            # Should use cached title, not LLM title
+            assert result.title == "Pre-cached Title"
+            assert result.tags == ["precached"]
+            # LLM should NOT have been called
+            mock_llm.extract_structured.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_processor_caches_result(self, link_bookmark, sample_html, link_cache, mock_llm_client):
+        """Successful LLM extraction result is saved to cache."""
+        processor = LinkProcessor(timeout=10, llm_client=mock_llm_client, cache=link_cache)
+
+        # Verify cache is empty initially
+        assert not link_cache.has("https://example.com/article")
+
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor.process(link_bookmark)
+
+            assert result.success is True
+            # Result should now be cached
+            assert link_cache.has("https://example.com/article")
+
+            # Verify cached data matches what LLM returned
+            cached = link_cache.get("https://example.com/article")
+            assert cached["title"] == "Cached Article Title"
+            assert cached["tldr"] == "This is a cached summary."
+
+    @pytest.mark.asyncio
+    async def test_processor_llm_on_cache_miss(self, link_bookmark, sample_html, link_cache, mock_llm_client):
+        """Cache miss → LLM is called."""
+        processor = LinkProcessor(timeout=10, llm_client=mock_llm_client, cache=link_cache)
+
+        # Cache is empty (miss)
+        assert not link_cache.has("https://example.com/article")
+
+        mock_response = MagicMock()
+        mock_response.text = sample_html
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.processors.link_processor.create_client", return_value=mock_client):
+            result = await processor.process(link_bookmark)
+
+            assert result.success is True
+            # LLM should have been called due to cache miss
+            mock_llm_client.extract_structured.assert_called_once()
+            # Result should use LLM data
+            assert result.title == "Cached Article Title"
+            assert result.tags == ["cached", "test"]

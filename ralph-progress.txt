@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 23
-- Commits feitos: 24
+- Issues processadas: 24
+- Commits feitos: 25
 
 ## Histórico de Iterações
 
@@ -189,4 +189,11 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Ação: Integrei LLMClient no LinkProcessor para extrair título, TL;DR, key_points e tags de páginas web. Adicionei EXTRACTION_PROMPT, _extract_with_llm(), _validate_llm_response(). Graceful degradation quando LLM indisponível. 12 novos testes para extração e validação.
 - Arquivos: src/processors/link_processor.py, tests/test_link_processor.py
 - Commit: 1093699
+- Status: completo
+
+## Iteração 26 - 2026-01-23
+- Issue: #30 [4.5] Link Cache - Core
+- Ação: Implementei LinkCache com url_to_key() usando SHA256[:16], TTL de 30 dias configurável, atomic writes (temp file + rename), métodos get/set/has/clear/get_stats + 22 testes
+- Arquivos: src/core/link_cache.py, tests/test_link_cache.py
+- Commit: e74b034
 - Status: completo
