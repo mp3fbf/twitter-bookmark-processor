@@ -1,0 +1,28 @@
+{% extends "base.md.j2" %}
+
+{% block content %}
+## Source
+
+[{{ source_url }}]({{ source_url }})
+
+{% if tldr and tldr != title %}
+## TL;DR
+
+{{ tldr }}
+
+{% endif %}
+{% if key_points %}
+## Key Points
+
+{% for point in key_points %}
+- {{ point }}
+{% endfor %}
+
+{% endif %}
+{% if body %}
+## Original Context
+
+> {{ body | replace("\n", "\n> ") }}
+
+{% endif %}
+{% endblock %}

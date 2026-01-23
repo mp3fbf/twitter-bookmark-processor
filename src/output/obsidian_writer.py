@@ -169,7 +169,8 @@ class ObsidianWriter:
             return "thread.md.j2"
         if bookmark.content_type == ContentType.VIDEO:
             return "video.md.j2"
-        # Future: link.md.j2
+        if bookmark.content_type == ContentType.LINK:
+            return "link.md.j2"
         return "tweet.md.j2"
 
     def _render_template(

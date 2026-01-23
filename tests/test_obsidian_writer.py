@@ -748,3 +748,146 @@ class TestVideoTemplate:
         assert "![thumbnail]" not in content
         # But should still have duration
         assert "**Duration**: 5:00" in content
+
+
+class TestLinkTemplate:
+    """Tests for link-specific Jinja2 template."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def writer(self, output_dir: Path) -> ObsidianWriter:
+        """Create a writer instance."""
+        return ObsidianWriter(output_dir)
+
+    @pytest.fixture
+    def link_bookmark(self) -> Bookmark:
+        """Create a link bookmark for testing."""
+        return Bookmark(
+            id="1234567890",
+            url="https://twitter.com/paulg/status/1234567890",
+            text="Great article on startup equity",
+            author_username="paulg",
+            author_name="Paul Graham",
+            content_type=ContentType.LINK,
+            links=["https://paulgraham.com/equity.html"],
+        )
+
+    @pytest.fixture
+    def link_result(self) -> ProcessResult:
+        """Create a link process result with metadata."""
+        return ProcessResult(
+            success=True,
+            title="Startup Equity Distribution Guide",
+            content="Great article on startup equity",
+            tags=["startups", "equity", "founders"],
+            metadata={
+                "source_url": "https://paulgraham.com/equity.html",
+                "tldr": "Equity should be distributed based on contribution and risk. Early employees deserve more than later ones.",
+                "key_points": [
+                    "Founder shares should vest over 4 years",
+                    "Early employees typically get 0.5-2% equity",
+                    "Investor dilution is expected in each round",
+                ],
+            },
+        )
+
+    @pytest.fixture
+    def link_result_minimal(self) -> ProcessResult:
+        """Create a minimal link process result."""
+        return ProcessResult(
+            success=True,
+            title="Some Article",
+            content="",
+            tags=["article"],
+            metadata={
+                "source_url": "https://example.com/article",
+            },
+        )
+
+    def test_link_template_has_source_url(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result: ProcessResult,
+    ):
+        """Link template should display source URL as clickable link."""
+        output_path = writer.write(link_bookmark, link_result)
+        content = output_path.read_text()
+
+        assert "## Source" in content
+        assert "[https://paulgraham.com/equity.html](https://paulgraham.com/equity.html)" in content
+
+    def test_link_template_has_tldr(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result: ProcessResult,
+    ):
+        """Link template should have TL;DR section."""
+        output_path = writer.write(link_bookmark, link_result)
+        content = output_path.read_text()
+
+        assert "## TL;DR" in content
+        assert "Equity should be distributed based on contribution" in content
+
+    def test_link_template_has_key_points(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result: ProcessResult,
+    ):
+        """Link template should display key points as bullet list."""
+        output_path = writer.write(link_bookmark, link_result)
+        content = output_path.read_text()
+
+        assert "## Key Points" in content
+        assert "- Founder shares should vest over 4 years" in content
+        assert "- Early employees typically get 0.5-2% equity" in content
+        assert "- Investor dilution is expected in each round" in content
+
+    def test_link_template_has_original_context(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result: ProcessResult,
+    ):
+        """Link template should show the tweet that shared the link."""
+        output_path = writer.write(link_bookmark, link_result)
+        content = output_path.read_text()
+
+        assert "## Original Context" in content
+        assert "> Great article on startup equity" in content
+
+    def test_link_template_uses_link_type_in_frontmatter(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result: ProcessResult,
+    ):
+        """Link frontmatter should have type: link."""
+        output_path = writer.write(link_bookmark, link_result)
+        content = output_path.read_text()
+
+        assert "type: link" in content
+
+    def test_link_template_omits_sections_when_empty(
+        self,
+        writer: ObsidianWriter,
+        link_bookmark: Bookmark,
+        link_result_minimal: ProcessResult,
+    ):
+        """Link template should omit sections when data is not present."""
+        output_path = writer.write(link_bookmark, link_result_minimal)
+        content = output_path.read_text()
+
+        # Should NOT have these sections
+        assert "## TL;DR" not in content
+        assert "## Key Points" not in content
+        assert "## Original Context" not in content
+        # But should still have source URL
+        assert "## Source" in content
+        assert "https://example.com/article" in content
