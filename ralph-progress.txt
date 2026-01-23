@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 1
-- Commits feitos: 2
+- Issues processadas: 2
+- Commits feitos: 3
 
 ## Histórico de Iterações
 
@@ -14,4 +14,11 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Ação: Implementei hierarquia de exceções com 5 classes + 19 testes
 - Arquivos: src/core/exceptions.py, tests/test_exceptions.py, .gitignore
 - Commits: 180e635, d8b7192
+- Status: completo
+
+## Iteração 2 - 2026-01-23
+- Issue: #4 [1.2] Bookmark Data Model
+- Ação: Implementei ContentType, ProcessingStatus enums e Bookmark dataclass com 26 testes
+- Arquivos: src/core/bookmark.py, tests/test_bookmark.py
+- Commit: aeace17
 - Status: completo
