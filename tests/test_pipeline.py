@@ -445,3 +445,315 @@ class TestPipelineNoteContent:
         assert "tags:" in content
         # Check for at least one hashtag as tag (case may vary)
         assert "python" in content.lower() or "Python" in content
+
+
+class TestPipelineVideoE2E:
+    """End-to-end tests for video processing through the pipeline."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        """Create a path for state file."""
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        """Create a pipeline instance."""
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    @pytest.fixture
+    def mock_video_skill_output(self):
+        """Sample successful skill output for a video."""
+        return {
+            "success": True,
+            "title": "How to Learn Anything Fast",
+            "channel": "Ali Abdaal",
+            "duration": "12:34",
+            "source_url": "https://www.youtube.com/watch?v=abc123",
+            "tldr": "A summary of learning techniques.",
+            "key_points": [
+                {"timestamp": "0:30", "content": "Active recall is key"},
+                {"timestamp": "3:45", "content": "Spaced repetition works"},
+            ],
+            "tags": ["productivity", "learning"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_pipeline_video_e2e(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+        mock_video_skill_output,
+    ):
+        """Export with video → skill called → note generated."""
+        from unittest.mock import MagicMock, patch
+
+        # Create export with a YouTube video bookmark
+        export_data = [
+            {
+                "tweet_id": "video_001",
+                "url": "https://twitter.com/user/status/video_001",
+                "full_text": "Check out this video https://youtube.com/watch?v=abc123",
+                "screen_name": "techuser",
+                "video_url": "https://youtube.com/watch?v=abc123",  # Twillot video_url field
+            }
+        ]
+        export_path = tmp_path / "video_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        # Mock the subprocess call to video skill
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_video_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await pipeline.process_export(export_path)
+
+        assert result.processed == 1
+        assert result.failed == 0
+
+        # Verify note was created
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 1
+
+        # Verify note content has video-specific fields
+        note_content = notes[0].read_text()
+        assert "video" in note_content.lower()
+
+
+class TestPipelineThreadE2E:
+    """End-to-end tests for thread processing through the pipeline."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        """Create a path for state file."""
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        """Create a pipeline instance."""
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    @pytest.fixture
+    def mock_thread_skill_output(self):
+        """Sample successful skill output for a thread."""
+        return {
+            "success": True,
+            "source": "bird",
+            "author": "naval",
+            "tweet_count": 2,
+            "tweets": [
+                {
+                    "id": "thread_001",
+                    "text": "1/ How to Get Rich 🧵",
+                    "author_username": "naval",
+                    "is_thread": True,
+                    "thread_position": 1,
+                    "media_urls": [],
+                    "links": [],
+                    "url": "https://x.com/naval/status/thread_001",
+                },
+                {
+                    "id": "thread_002",
+                    "text": "2/ Seek wealth, not money",
+                    "author_username": "naval",
+                    "is_thread": True,
+                    "thread_position": 2,
+                    "media_urls": [],
+                    "links": [],
+                },
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_pipeline_thread_e2e(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+        mock_thread_skill_output,
+    ):
+        """Export with thread → skill called → note generated."""
+        from unittest.mock import MagicMock, patch
+
+        # Create export with a thread bookmark
+        # Using multiple thread signals to ensure classification as THREAD
+        export_data = [
+            {
+                "tweet_id": "thread_001",
+                "url": "https://x.com/naval/status/thread_001",
+                "full_text": "1/ How to Get Rich 🧵 (thread)",
+                "screen_name": "naval",
+                "conversation_id": "thread_001",  # Thread signal
+            }
+        ]
+        export_path = tmp_path / "thread_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        # Mock the subprocess call to thread skill
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_thread_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await pipeline.process_export(export_path)
+
+        assert result.processed == 1
+        assert result.failed == 0
+
+        # Verify note was created
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 1
+
+        # Verify note content has thread-specific fields
+        note_content = notes[0].read_text()
+        assert "thread" in note_content.lower()
+
+
+class TestPipelineRouting:
+    """Tests for correct routing to processors."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        """Create a path for state file."""
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        """Create a pipeline instance."""
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    def test_pipeline_has_video_processor(self, pipeline: Pipeline):
+        """Pipeline has VideoProcessor registered."""
+        from src.core.bookmark import ContentType
+        from src.processors.video_processor import VideoProcessor
+
+        assert ContentType.VIDEO in pipeline._processors
+        assert isinstance(pipeline._processors[ContentType.VIDEO], VideoProcessor)
+
+    def test_pipeline_has_thread_processor(self, pipeline: Pipeline):
+        """Pipeline has ThreadProcessor registered."""
+        from src.core.bookmark import ContentType
+        from src.processors.thread_processor import ThreadProcessor
+
+        assert ContentType.THREAD in pipeline._processors
+        assert isinstance(pipeline._processors[ContentType.THREAD], ThreadProcessor)
+
+    def test_pipeline_has_tweet_processor(self, pipeline: Pipeline):
+        """Pipeline has TweetProcessor registered."""
+        from src.core.bookmark import ContentType
+        from src.processors.tweet_processor import TweetProcessor
+
+        assert ContentType.TWEET in pipeline._processors
+        assert isinstance(pipeline._processors[ContentType.TWEET], TweetProcessor)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_routes_video_correctly(
+        self,
+        pipeline: Pipeline,
+    ):
+        """VIDEO bookmark is routed to VideoProcessor."""
+        from unittest.mock import AsyncMock, patch
+
+        bookmark = Bookmark(
+            id="route_video",
+            url="https://twitter.com/user/status/route_video",
+            text="Watch this https://youtube.com/watch?v=xyz",
+            author_username="user",
+            video_urls=["https://youtube.com/watch?v=xyz"],
+        )
+
+        # Mock the VideoProcessor.process method
+        with patch.object(
+            pipeline._processors[ContentType.VIDEO],
+            "process",
+            new_callable=AsyncMock,
+        ) as mock_process:
+            from src.processors.base import ProcessResult
+            mock_process.return_value = ProcessResult(
+                success=True,
+                content="Video content",
+                title="Video Title",
+                tags=["video"],
+            )
+
+            await pipeline.process_bookmark(bookmark)
+
+            # Verify VideoProcessor was called
+            mock_process.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_routes_thread_correctly(
+        self,
+        pipeline: Pipeline,
+    ):
+        """THREAD bookmark is routed to ThreadProcessor."""
+        from unittest.mock import AsyncMock, patch
+
+        # Bookmark with multiple thread signals
+        bookmark = Bookmark(
+            id="route_thread",
+            url="https://x.com/user/status/route_thread",
+            text="1/ A thread 🧵 (thread)",  # Multiple signals
+            author_username="user",
+        )
+
+        # Mock the ThreadProcessor.process method
+        with patch.object(
+            pipeline._processors[ContentType.THREAD],
+            "process",
+            new_callable=AsyncMock,
+        ) as mock_process:
+            from src.processors.base import ProcessResult
+            mock_process.return_value = ProcessResult(
+                success=True,
+                content="Thread content",
+                title="Thread Title",
+                tags=["thread"],
+                metadata={"tweets": [], "tweet_count": 0, "author": "user"},
+            )
+
+            await pipeline.process_bookmark(bookmark)
+
+            # Verify ThreadProcessor was called
+            mock_process.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_routes_tweet_correctly(
+        self,
+        pipeline: Pipeline,
+        output_dir: Path,
+    ):
+        """TWEET bookmark is routed to TweetProcessor (no mocking needed)."""
+        bookmark = Bookmark(
+            id="route_tweet",
+            url="https://twitter.com/user/status/route_tweet",
+            text="Just a simple tweet #hello",
+            author_username="user",
+        )
+
+        # TweetProcessor doesn't need external calls, so no mocking needed
+        output_path = await pipeline.process_bookmark(bookmark)
+
+        assert output_path is not None
+        assert output_path.exists()
+        # Verify it was treated as a tweet
+        content = output_path.read_text()
+        assert "type: tweet" in content
