@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 37
-- Commits feitos: 38
+- Issues processadas: 38
+- Commits feitos: 39
 
 ## Histórico de Iterações
 
@@ -290,3 +290,19 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: c455b02
 - Status: completo
 - Nota: Sprint 6 em andamento - próxima issue #43 [6.5] Notification Integration
+
+## Iteração 39 - 2026-01-23
+- Issue: #43 [6.5] Notification Integration
+- Ação: Implementei notifier.py com notify() chamando comando externo via subprocess, graceful degradation quando comando não existe, helpers notify_success/notify_error/notify_processing, env var NOTIFY_CMD configurável + 12 testes
+- Arquivos: src/core/notifier.py, tests/test_notifier.py
+- Commit: ed3bf77
+- Status: completo
+- Nota: Sprint 6 em andamento - próxima issue #44 [6.6] Webhook Integration with Pipeline
+
+## Iteração 40 - 2026-01-23
+- Issue: #44 [6.6] Webhook Integration with Pipeline
+- Ação: Integrei Pipeline no webhook_server. Adicionei PIPELINE_KEY, _create_bookmark_from_url(), atualizei _process_url_background() para usar Pipeline.process_bookmark() com notificações. create_app() agora inicializa Pipeline + 7 novos testes
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py
+- Commit: afc611f
+- Status: completo
+- Nota: Sprint 6 COMPLETO - próxima issue #45 [7.0] Duplicate Detection
