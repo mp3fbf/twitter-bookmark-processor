@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 30
-- Commits feitos: 31
+- Issues processadas: 34
+- Commits feitos: 35
 
 ## Histórico de Iterações
 
@@ -242,3 +242,27 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Arquivos: src/core/retry.py, tests/test_retry.py
 - Commit: 49df01a
 - Status: completo
+
+## Iteração 33 - 2026-01-23
+- Issue: #37 [5.4] Pipeline - Concurrent Processing
+- Ação: Adicionei processamento concorrente ao Pipeline com asyncio.gather, rate limiting por content type via RateLimiter, semaphore para max_concurrency, e tolerância a falhas parciais. 3 novos testes para batch processing, timing de rate limits, e partial failure handling.
+- Arquivos: src/core/pipeline.py, tests/test_pipeline.py
+- Commit: 273de29
+- Status: completo
+- Nota: Sprint 5 em andamento - última issue é #38 [5.5] Structured Logger
+
+## Iteração 34 - 2026-01-23
+- Issue: #38 [5.5] Structured Logger
+- Ação: Implementei logger JSON estruturado com JSONFormatter, BookmarkLoggerAdapter para tracking automático de bookmark_id, funções helper (setup_logging, get_logger, get_bookmark_logger), singleton pattern + 15 testes
+- Arquivos: src/core/logger.py, tests/test_logger.py
+- Commit: 8ee5ce0
+- Status: completo
+- Nota: Sprint 5 COMPLETO - próxima issue é #39 [6.1] Webhook Server - Basic HTTP
+
+## Iteração 35 - 2026-01-23
+- Issue: #39 [6.1] Webhook Server - Basic HTTP
+- Ação: Implementei webhook server com aiohttp - GET /health retorna status ok, POST /process aceita JSON com URL e retorna 202 Accepted. Validação de JSON body e campos obrigatórios. 14 testes.
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py, requirements.txt
+- Commit: bd027e2
+- Status: completo
+- Nota: Sprint 6 iniciado - primeira issue completa

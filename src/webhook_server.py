@@ -6,12 +6,51 @@ Designed to be called from iOS Shortcuts or other automation tools.
 Endpoints:
     GET /health - Health check endpoint, returns {"status": "ok"}
     POST /process - Accepts JSON with URL to process, returns 202 Accepted
+                   Requires Bearer token authentication when TWITTER_WEBHOOK_TOKEN is set.
 """
 
 import json
+import os
 from typing import Any
 
 from aiohttp import web
+
+
+def get_auth_token() -> str | None:
+    """Get the configured authentication token from environment.
+
+    Returns:
+        The token string if set, None otherwise (auth disabled in dev).
+    """
+    return os.environ.get("TWITTER_WEBHOOK_TOKEN")
+
+
+def check_auth(request: web.Request) -> bool:
+    """Check if the request has valid authentication.
+
+    If TWITTER_WEBHOOK_TOKEN is not set, authentication is disabled (dev mode).
+    If set, the request must include a valid Authorization header.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        True if authentication is valid or disabled, False otherwise.
+    """
+    token = get_auth_token()
+
+    # No token configured = auth disabled (dev mode)
+    if not token:
+        return True
+
+    auth_header = request.headers.get("Authorization", "")
+
+    # Expect "Bearer <token>"
+    if not auth_header.startswith("Bearer "):
+        return False
+
+    provided_token = auth_header[7:]  # Remove "Bearer " prefix
+    return provided_token == token
 
 
 async def health_handler(request: web.Request) -> web.Response:
@@ -29,13 +68,23 @@ async def process_handler(request: web.Request) -> web.Response:
     Expects JSON body with "url" field containing the Twitter/X URL to process.
     Returns 202 Accepted immediately; actual processing happens asynchronously.
 
+    When TWITTER_WEBHOOK_TOKEN is set, requires Authorization: Bearer <token> header.
+
     Args:
         request: The incoming HTTP request.
 
     Returns:
-        202 Accepted if request is valid.
+        202 Accepted if request is valid and authenticated.
         400 Bad Request if JSON is invalid or missing required fields.
+        401 Unauthorized if authentication fails.
     """
+    # Check authentication first
+    if not check_auth(request):
+        return web.json_response(
+            {"error": "Unauthorized - invalid or missing token"},
+            status=401,
+        )
+
     try:
         body = await request.json()
     except json.JSONDecodeError:
