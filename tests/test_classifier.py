@@ -162,3 +162,199 @@ class TestClassifyTweetDefault:
         result = classify(bookmark)
 
         assert result == ContentType.TWEET
+
+
+class TestClassifyThreadByConversation:
+    """Test THREAD classification via conversation_id."""
+
+    def test_classify_thread_by_conversation_id(self):
+        """conversation_id != id → THREAD."""
+        bookmark = _make_bookmark(
+            id="123456789",
+            conversation_id="987654321",  # Different from id
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_not_thread_same_conversation_id(self):
+        """conversation_id == id → NOT thread (just a single tweet)."""
+        bookmark = _make_bookmark(
+            id="123456789",
+            conversation_id="123456789",  # Same as id
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_not_thread_null_conversation_id(self):
+        """conversation_id is None → NOT thread."""
+        bookmark = _make_bookmark(
+            id="123456789",
+            conversation_id=None,
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+
+class TestClassifyThreadByReplyChain:
+    """Test THREAD classification via reply chain (author replying to self)."""
+
+    def test_classify_thread_by_reply_to_self(self):
+        """in_reply_to_user_id == author_id → THREAD (self-reply)."""
+        bookmark = _make_bookmark(
+            author_id="user123",
+            in_reply_to_user_id="user123",  # Same as author_id
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_not_thread_reply_to_other(self):
+        """in_reply_to_user_id != author_id → NOT thread (reply to someone else)."""
+        bookmark = _make_bookmark(
+            author_id="user123",
+            in_reply_to_user_id="other456",  # Different from author_id
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_not_thread_null_reply_to(self):
+        """in_reply_to_user_id is None → NOT thread."""
+        bookmark = _make_bookmark(
+            author_id="user123",
+            in_reply_to_user_id=None,
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_not_thread_null_author_id(self):
+        """author_id is None → NOT thread (cannot determine self-reply)."""
+        bookmark = _make_bookmark(
+            author_id=None,
+            in_reply_to_user_id="user123",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+
+class TestClassifyThreadByHeuristics:
+    """Test THREAD classification via text heuristics (needs 2+ signals)."""
+
+    def test_classify_thread_number_and_emoji(self):
+        """Number pattern + 🧵 emoji → THREAD (2 signals)."""
+        bookmark = _make_bookmark(
+            text="1/ 🧵 This is a thread about AI",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_thread_number_and_word(self):
+        """Number pattern + (thread) word → THREAD (2 signals)."""
+        bookmark = _make_bookmark(
+            text="1. Important topic (thread)",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_thread_emoji_and_word(self):
+        """🧵 emoji + (thread) word → THREAD (2 signals)."""
+        bookmark = _make_bookmark(
+            text="🧵 Here's my analysis (thread)",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_thread_all_three_signals(self):
+        """All 3 heuristic signals → THREAD."""
+        bookmark = _make_bookmark(
+            text="1/ 🧵 Complete breakdown (thread)",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_classify_not_thread_single_number(self):
+        """Only number pattern → NOT thread (1 signal insufficient)."""
+        bookmark = _make_bookmark(
+            text="1/ Here's my take on this topic",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_not_thread_single_emoji(self):
+        """Only 🧵 emoji → NOT thread (1 signal insufficient)."""
+        bookmark = _make_bookmark(
+            text="🧵 Interesting read about startups",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_not_thread_single_word(self):
+        """Only (thread) word → NOT thread (1 signal insufficient)."""
+        bookmark = _make_bookmark(
+            text="A fascinating discussion (thread)",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_thread_word_case_insensitive(self):
+        """(THREAD) in uppercase still counts as signal."""
+        bookmark = _make_bookmark(
+            text="1/ Important topic (THREAD)",
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+
+class TestClassifyPriority:
+    """Test classification priority (VIDEO > THREAD > TWEET)."""
+
+    def test_video_takes_priority_over_thread(self):
+        """VIDEO wins even if thread signals present."""
+        bookmark = _make_bookmark(
+            text="1/ 🧵 Check out this video",
+            conversation_id="987654321",  # Thread signal
+            video_urls=["https://video.twimg.com/ext_tw_video/123/video.mp4"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.VIDEO
+
+    def test_thread_takes_priority_over_tweet(self):
+        """THREAD wins over default TWEET."""
+        bookmark = _make_bookmark(
+            text="Just a regular tweet",
+            conversation_id="987654321",  # Thread signal
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
