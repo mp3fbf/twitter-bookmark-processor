@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 38
-- Commits feitos: 39
+- Issues processadas: 41
+- Commits feitos: 42
 
 ## Histórico de Iterações
 
@@ -306,3 +306,35 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: afc611f
 - Status: completo
 - Nota: Sprint 6 COMPLETO - próxima issue #45 [7.0] Duplicate Detection
+
+## Iteração 41 - 2026-01-23
+- Issue: #45 [7.0] Duplicate Detection
+- Ação: Implementei Deduplicator com is_duplicate(), filter_duplicates(), DeduplicationStats com contagem e taxa. Usa StateManager como fonte de verdade. 16 testes.
+- Arquivos: src/core/deduplicator.py, tests/test_deduplicator.py
+- Commit: 6b36c55
+- Status: completo
+- Nota: Sprint 7 iniciado
+
+## Iteração 42 - 2026-01-23
+- Issue: #46 [7.0a] Backlog File Management
+- Ação: Implementei BacklogManager com archive_file() (move + timestamp), clean_old_files() (TTL 30 dias), get_pending_files() (FIFO por mtime), get_stats() + 19 testes
+- Arquivos: src/core/backlog_manager.py, tests/test_backlog_manager.py
+- Commit: f1339d1
+- Status: completo
+- Nota: Sprint 7 em andamento - próxima issue #47 [7.1] Directory Watcher
+
+## Iteração 43 - 2026-01-23
+- Issue: #47 [7.1] Directory Watcher
+- Ação: Implementei DirectoryWatcher com get_new_files() (filtra já processados), mark_file_processed(), is_file_processed(), reset(), get_stats(). Usa BacklogManager para descoberta de arquivos + 13 testes
+- Arquivos: src/core/watcher.py, tests/test_watcher.py
+- Commit: 4d8be0e
+- Status: completo
+- Nota: Sprint 7 em andamento - próxima issue #48 [7.2] Main Entry Point - Once Mode
+
+## Iteração 44 - 2026-01-23
+- Issue: #48 [7.2] Main Entry Point - Once Mode
+- Ação: Implementei src/main.py com run_once() que processa backlog completo, integra DirectoryWatcher→Pipeline→BacklogManager, arquiva arquivos processados, print_stats() para resumo, exit code 0/1 + 14 testes
+- Arquivos: src/main.py, tests/test_main.py
+- Commit: ad9e4b0
+- Status: completo
+- Nota: Sprint 7 em andamento - próxima issue #49 [7.3] Main Entry Point - Daemon Mode

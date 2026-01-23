@@ -8,6 +8,7 @@ Usage:
 """
 
 import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from src.core.state_manager import StateManager
 from src.core.watcher import DirectoryWatcher
 
 logger = get_logger(__name__)
+
+# Default polling interval in seconds (2 minutes)
+DEFAULT_POLL_INTERVAL = 120
+
+# Shutdown event for graceful termination
+_shutdown_event: asyncio.Event | None = None
 
 
 async def run_once(
@@ -76,6 +83,105 @@ async def run_once(
             total_result.errors.append(f"File {export_file}: {e}")
 
     return total_result
+
+
+async def run_daemon(
+    backlog_dir: Path,
+    output_dir: Path,
+    state_file: Path,
+    poll_interval: int = DEFAULT_POLL_INTERVAL,
+) -> None:
+    """Run as a daemon, continuously polling for new files.
+
+    Polls the backlog directory at regular intervals and processes
+    any new export files. Handles SIGTERM/SIGINT for graceful shutdown,
+    waiting for any in-progress jobs to complete before exiting.
+
+    Args:
+        backlog_dir: Directory containing Twillot export files.
+        output_dir: Directory for generated Obsidian notes.
+        state_file: Path to JSON state persistence file.
+        poll_interval: Seconds between polling (default: 120).
+    """
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
+    # Set up signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+
+    def signal_handler(sig: int) -> None:
+        logger.info("Received signal %s, initiating graceful shutdown...", sig)
+        if _shutdown_event:
+            _shutdown_event.set()
+
+    # Register signal handlers
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler
+            signal.signal(sig, lambda s, f: signal_handler(s))
+
+    logger.info("Starting daemon mode (poll interval: %ds)", poll_interval)
+
+    # Track current processing task for graceful shutdown
+    current_task: asyncio.Task | None = None
+
+    try:
+        while not _shutdown_event.is_set():
+            # Run one processing cycle
+            current_task = asyncio.create_task(
+                run_once(
+                    backlog_dir=backlog_dir,
+                    output_dir=output_dir,
+                    state_file=state_file,
+                )
+            )
+
+            try:
+                result = await current_task
+                current_task = None
+
+                if result.processed > 0:
+                    logger.info(
+                        "Cycle complete: processed %d, skipped %d, failed %d",
+                        result.processed,
+                        result.skipped,
+                        result.failed,
+                    )
+            except asyncio.CancelledError:
+                logger.info("Processing cycle cancelled")
+                break
+
+            # Wait for next poll interval or shutdown signal
+            try:
+                await asyncio.wait_for(
+                    _shutdown_event.wait(),
+                    timeout=poll_interval,
+                )
+                # Shutdown requested during wait
+                break
+            except asyncio.TimeoutError:
+                # Normal timeout - continue to next poll
+                pass
+
+    finally:
+        # Handle any in-progress job on shutdown
+        if current_task and not current_task.done():
+            logger.info("Waiting for in-progress job to complete...")
+            try:
+                # Give it some time to finish gracefully
+                await asyncio.wait_for(current_task, timeout=30)
+                logger.info("In-progress job completed")
+            except asyncio.TimeoutError:
+                logger.warning("In-progress job timed out, cancelling...")
+                current_task.cancel()
+                try:
+                    await current_task
+                except asyncio.CancelledError:
+                    pass
+
+        logger.info("Daemon shutdown complete")
 
 
 def print_stats(result: PipelineResult) -> None:
@@ -136,9 +242,21 @@ def main(args: list[str] | None = None) -> int:
         print_stats(result)
         return 0 if result.failed == 0 else 1
     else:
-        # Daemon mode will be implemented in #49
-        print("Daemon mode not yet implemented. Use --once for now.")
-        return 1
+        # Daemon mode - continuous polling
+        logger.info("Running in daemon mode")
+        try:
+            asyncio.run(
+                run_daemon(
+                    backlog_dir=backlog_dir,
+                    output_dir=config.output_dir,
+                    state_file=config.state_file,
+                )
+            )
+            return 0
+        except KeyboardInterrupt:
+            # Handle Ctrl+C during startup
+            logger.info("Interrupted during startup")
+            return 0
 
 
 if __name__ == "__main__":

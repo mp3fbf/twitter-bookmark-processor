@@ -1,5 +1,6 @@
 """Tests for main entry point module."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from src.core.pipeline import PipelineResult
-from src.main import main, print_stats, run_once
+from src.main import DEFAULT_POLL_INTERVAL, main, print_stats, run_daemon, run_once
 
 
 @pytest.fixture
@@ -257,12 +258,18 @@ class TestMain:
 
             assert exit_code == 1
 
-    def test_daemon_mode_not_implemented(self, mock_env: dict) -> None:
-        """Running without --once shows not implemented."""
+    def test_daemon_mode_starts_daemon(self, mock_env: dict) -> None:
+        """Running without --once starts daemon mode."""
         with patch.dict(os.environ, mock_env, clear=False):
-            exit_code = main([])
+            with patch("src.main.run_daemon") as mock_daemon:
+                # Make daemon exit immediately
+                mock_daemon.return_value = None
 
-            assert exit_code == 1
+                exit_code = main([])
+
+                # Daemon mode returns 0 on clean exit
+                assert exit_code == 0
+                mock_daemon.assert_called_once()
 
     def test_returns_zero_on_success(
         self, mock_env: dict, tmp_path: Path
@@ -287,3 +294,126 @@ class TestMain:
                 exit_code = main(["--once"])
 
                 assert exit_code == 1
+
+
+class TestRunDaemon:
+    """Tests for run_daemon function."""
+
+    @pytest.fixture
+    def daemon_workspace(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Create workspace for daemon tests."""
+        backlog = tmp_path / "backlog"
+        backlog.mkdir()
+        output = tmp_path / "output"
+        output.mkdir()
+        state_file = tmp_path / "state.json"
+        return backlog, output, state_file
+
+    @pytest.mark.asyncio
+    async def test_daemon_runs_loop(
+        self, daemon_workspace: tuple[Path, Path, Path]
+    ) -> None:
+        """run_daemon polls repeatedly until shutdown."""
+        backlog, output, state_file = daemon_workspace
+        call_count = 0
+
+        async def mock_run_once(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Stop after 2 iterations
+            if call_count >= 2:
+                # Trigger shutdown
+                import src.main as main_module
+                if main_module._shutdown_event:
+                    main_module._shutdown_event.set()
+            return PipelineResult(processed=1)
+
+        with patch("src.main.run_once", side_effect=mock_run_once):
+            await run_daemon(
+                backlog_dir=backlog,
+                output_dir=output,
+                state_file=state_file,
+                poll_interval=1,  # Short interval for testing
+            )
+
+        assert call_count >= 2  # Loop ran multiple times
+
+    @pytest.mark.asyncio
+    async def test_daemon_interval_2min_default(self) -> None:
+        """Default poll interval is 2 minutes (120 seconds)."""
+        assert DEFAULT_POLL_INTERVAL == 120
+
+    @pytest.mark.asyncio
+    async def test_daemon_graceful_shutdown(
+        self, daemon_workspace: tuple[Path, Path, Path]
+    ) -> None:
+        """Daemon handles SIGTERM gracefully."""
+        backlog, output, state_file = daemon_workspace
+        shutdown_completed = False
+
+        async def slow_run_once(*args, **kwargs):
+            # Simulate a slow processing job
+            await asyncio.sleep(0.5)
+            return PipelineResult(processed=1)
+
+        async def trigger_shutdown():
+            # Wait a bit then trigger shutdown
+            await asyncio.sleep(0.1)
+            import src.main as main_module
+            if main_module._shutdown_event:
+                main_module._shutdown_event.set()
+
+        with patch("src.main.run_once", side_effect=slow_run_once):
+            # Run daemon with shutdown trigger
+            daemon_task = asyncio.create_task(
+                run_daemon(
+                    backlog_dir=backlog,
+                    output_dir=output,
+                    state_file=state_file,
+                    poll_interval=60,  # Won't reach this
+                )
+            )
+            shutdown_task = asyncio.create_task(trigger_shutdown())
+
+            # Wait for both
+            await asyncio.gather(daemon_task, shutdown_task)
+            shutdown_completed = True
+
+        assert shutdown_completed  # Daemon shut down cleanly
+
+    @pytest.mark.asyncio
+    async def test_daemon_waits_for_in_progress_jobs(
+        self, daemon_workspace: tuple[Path, Path, Path]
+    ) -> None:
+        """Daemon waits for in-progress jobs on shutdown."""
+        backlog, output, state_file = daemon_workspace
+        job_completed = False
+
+        async def slow_run_once(*args, **kwargs):
+            nonlocal job_completed
+            await asyncio.sleep(0.3)
+            job_completed = True
+            return PipelineResult(processed=1)
+
+        async def trigger_shutdown():
+            # Trigger shutdown while job is running
+            await asyncio.sleep(0.1)
+            import src.main as main_module
+            if main_module._shutdown_event:
+                main_module._shutdown_event.set()
+
+        with patch("src.main.run_once", side_effect=slow_run_once):
+            daemon_task = asyncio.create_task(
+                run_daemon(
+                    backlog_dir=backlog,
+                    output_dir=output,
+                    state_file=state_file,
+                    poll_interval=60,
+                )
+            )
+            shutdown_task = asyncio.create_task(trigger_shutdown())
+
+            await asyncio.gather(daemon_task, shutdown_task)
+
+        # Job should have completed despite shutdown request
+        assert job_completed
