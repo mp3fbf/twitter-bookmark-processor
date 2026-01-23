@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.core.bookmark import Bookmark, ContentType
+from src.core.exceptions import ExtractionError
 from src.processors.thread_processor import ThreadProcessor
 
 
@@ -356,3 +357,189 @@ class TestThreadProcessorDuration:
         result = await processor.process(bookmark_no_twitter)
 
         assert result.duration_ms >= 0
+
+
+class TestThreadProcessorContentFormatting:
+    """Tests for content formatting (Issue #22)."""
+
+    @pytest.mark.asyncio
+    async def test_thread_formats_multiple_tweets(
+        self, processor, thread_bookmark, mock_skill_output
+    ):
+        """Each tweet is numbered in formatted content."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # Each tweet should be numbered
+            assert "### Tweet 1" in result.content
+            assert "### Tweet 2" in result.content
+            assert "### Tweet 3" in result.content
+
+    @pytest.mark.asyncio
+    async def test_thread_includes_media(self, thread_bookmark):
+        """Media URLs (images) are included in formatted content."""
+        processor = ThreadProcessor(timeout=10)
+
+        # Skill output with media
+        skill_output = {
+            "success": True,
+            "author": "testuser",
+            "tweets": [
+                {
+                    "id": "1",
+                    "text": "Check out this image",
+                    "media_urls": ["https://pbs.twimg.com/media/image1.jpg"],
+                    "links": [],
+                },
+                {
+                    "id": "2",
+                    "text": "And this link",
+                    "media_urls": [],
+                    "links": ["https://example.com/article"],
+                },
+            ],
+        }
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # Media should be included as markdown images
+            assert "![image](https://pbs.twimg.com/media/image1.jpg)" in result.content
+            # External links should be included
+            assert "https://example.com/article" in result.content
+
+    @pytest.mark.asyncio
+    async def test_thread_extracts_key_points(self, thread_bookmark, mock_skill_output):
+        """Key points are extracted via LLM when available."""
+        # Create mock LLM client
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.return_value = {
+            "key_points": [
+                "Seek wealth, not money or status",
+                "Wealth is assets that earn while you sleep",
+                "Money transfers time and wealth",
+            ]
+        }
+
+        processor = ThreadProcessor(timeout=10, llm_client=mock_llm)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # LLM should have been called
+            mock_llm.extract_structured.assert_called_once()
+
+            # Key points should be in metadata
+            assert "key_points" in result.metadata
+            assert len(result.metadata["key_points"]) == 3
+            assert "Seek wealth" in result.metadata["key_points"][0]
+
+
+class TestThreadProcessorKeyPointsEdgeCases:
+    """Tests for key points extraction edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_key_points_graceful_without_llm(self, thread_bookmark, mock_skill_output):
+        """Key points are empty when LLM is not available."""
+        processor = ThreadProcessor(timeout=10, llm_client=None)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        # Also patch get_llm_client to raise (no API key)
+        with patch("subprocess.run", return_value=mock_result):
+            with patch(
+                "src.processors.thread_processor.get_llm_client",
+                side_effect=Exception("No API key"),
+            ):
+                result = await processor.process(thread_bookmark)
+
+                # Should succeed but with empty key_points
+                assert result.success is True
+                assert result.metadata["key_points"] == []
+
+    @pytest.mark.asyncio
+    async def test_key_points_graceful_on_llm_error(self, thread_bookmark, mock_skill_output):
+        """Key points are empty when LLM extraction fails."""
+        # Create mock LLM client that raises ExtractionError
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.side_effect = ExtractionError("API error")
+
+        processor = ThreadProcessor(timeout=10, llm_client=mock_llm)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # Should succeed but with empty key_points
+            assert result.success is True
+            assert result.metadata["key_points"] == []
+
+    @pytest.mark.asyncio
+    async def test_key_points_limits_to_five(self, thread_bookmark, mock_skill_output):
+        """Key points are limited to max 5 items."""
+        # Create mock LLM client that returns too many points
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.return_value = {
+            "key_points": [
+                "Point 1", "Point 2", "Point 3",
+                "Point 4", "Point 5", "Point 6", "Point 7",
+            ]
+        }
+
+        processor = ThreadProcessor(timeout=10, llm_client=mock_llm)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # Should be limited to 5
+            assert len(result.metadata["key_points"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_key_points_handles_invalid_response(self, thread_bookmark, mock_skill_output):
+        """Key points are empty when LLM returns invalid format."""
+        # Create mock LLM client that returns wrong format
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.return_value = {
+            "key_points": "not a list"  # Should be a list
+        }
+
+        processor = ThreadProcessor(timeout=10, llm_client=mock_llm)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(mock_skill_output)
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = await processor.process(thread_bookmark)
+
+            # Should succeed but with empty key_points
+            assert result.success is True
+            assert result.metadata["key_points"] == []

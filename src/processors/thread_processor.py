@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from src.core.exceptions import SkillError
+from src.core.exceptions import ExtractionError, SkillError
+from src.core.llm_client import LLMClient, get_llm_client
 from src.processors.base import BaseProcessor, ProcessResult
 
 if TYPE_CHECKING:
@@ -32,15 +33,23 @@ class ThreadProcessor(BaseProcessor):
     # Default timeout for skill execution (30 seconds for threads)
     DEFAULT_TIMEOUT = 30
 
-    def __init__(self, timeout: Optional[int] = None, output_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        timeout: Optional[int] = None,
+        output_dir: Optional[Path] = None,
+        llm_client: Optional[LLMClient] = None,
+    ):
         """Initialize thread processor.
 
         Args:
             timeout: Skill execution timeout in seconds (default: 30)
             output_dir: Directory where output should be saved (not used by twitter skill)
+            llm_client: Optional LLMClient for key points extraction. If not provided,
+                       will try to use global singleton (fails gracefully if unavailable).
         """
         self.timeout = timeout or self.DEFAULT_TIMEOUT
         self.output_dir = output_dir
+        self._llm_client = llm_client
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a thread bookmark by calling the twitter skill.
@@ -190,8 +199,8 @@ class ThreadProcessor(BaseProcessor):
         # Build content from all tweets
         content = self._format_content(data, tweets)
 
-        # Extract key points if provided (LLM will populate this later)
-        key_points = data.get("key_points", [])
+        # Extract key points using LLM (if available)
+        key_points = self._extract_key_points(tweets)
 
         # Build metadata for template rendering
         metadata = {
@@ -314,3 +323,55 @@ class ThreadProcessor(BaseProcessor):
             lines.append(f"[View original thread]({tweets[0]['url']})")
 
         return "\n".join(lines)
+
+    def _extract_key_points(self, tweets: list) -> list[str]:
+        """Extract key points from thread content using LLM.
+
+        Args:
+            tweets: List of tweet dicts
+
+        Returns:
+            List of key points (3-5 bullet points), empty if LLM unavailable or fails
+        """
+        if not tweets:
+            return []
+
+        # Get LLM client (use injected or global singleton)
+        llm_client = self._llm_client
+        if llm_client is None:
+            try:
+                llm_client = get_llm_client()
+            except Exception:
+                # LLM not available (no API key, etc.) - return empty
+                return []
+
+        # Build thread text for analysis
+        thread_text = "\n\n".join(
+            f"Tweet {i}: {tweet.get('text', '')}"
+            for i, tweet in enumerate(tweets, 1)
+        )
+
+        system_prompt = """You are analyzing a Twitter thread. Extract 3-5 key points that summarize the main ideas.
+
+Return your response as a JSON object with a single key "key_points" containing an array of strings.
+Each key point should be a concise sentence (under 100 characters).
+
+Example response:
+{
+  "key_points": [
+    "First key insight from the thread",
+    "Second important point",
+    "Third takeaway"
+  ]
+}"""
+
+        try:
+            result = llm_client.extract_structured(thread_text, system_prompt)
+            key_points = result.get("key_points", [])
+            # Validate: must be list of strings
+            if isinstance(key_points, list) and all(isinstance(p, str) for p in key_points):
+                return key_points[:5]  # Max 5 points
+            return []
+        except ExtractionError:
+            # LLM extraction failed - return empty (graceful degradation)
+            return []
