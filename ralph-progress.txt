@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 36
-- Commits feitos: 37
+- Issues processadas: 37
+- Commits feitos: 38
 
 ## Histórico de Iterações
 
@@ -282,3 +282,11 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: 04147c5
 - Status: completo
 - Nota: Sprint 6 em andamento - próxima issue #42 [6.4] URL Validation
+
+## Iteração 38 - 2026-01-23
+- Issue: #42 [6.4] Webhook Server - URL Validation
+- Ação: Adicionei validação de URLs Twitter/X ao webhook. validate_twitter_url() verifica domínios, extract_tweet_id() extrai ID numérico, /process retorna 400 para URLs inválidas. Response agora inclui tweet_id. 6 novos testes (3 unit + 3 endpoint).
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py
+- Commit: c455b02
+- Status: completo
+- Nota: Sprint 6 em andamento - próxima issue #43 [6.5] Notification Integration
