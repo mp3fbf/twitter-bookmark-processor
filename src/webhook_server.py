@@ -7,13 +7,22 @@ Endpoints:
     GET /health - Health check endpoint, returns {"status": "ok"}
     POST /process - Accepts JSON with URL to process, returns 202 Accepted
                    Requires Bearer token authentication when TWITTER_WEBHOOK_TOKEN is set.
+                   Processing happens asynchronously in a background task.
 """
 
+import asyncio
 import json
+import logging
 import os
+import uuid
 from typing import Any
 
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
+
+# AppKey for storing background tasks (typed dict access)
+BACKGROUND_TASKS_KEY = web.AppKey("background_tasks", dict[str, asyncio.Task])
 
 
 def get_auth_token() -> str | None:
@@ -106,11 +115,67 @@ async def process_handler(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # Return 202 Accepted - processing happens asynchronously (Issue #41)
+    # Generate a unique task ID for tracking
+    task_id = str(uuid.uuid4())[:8]
+
+    # Spawn background processing task
+    task = asyncio.create_task(
+        _process_url_background(request.app, task_id, url),
+        name=f"process-{task_id}",
+    )
+
+    # Track the task in app state
+    request.app[BACKGROUND_TASKS_KEY][task_id] = task
+
+    # Clean up completed task when done
+    task.add_done_callback(
+        lambda t: _cleanup_task(request.app, task_id)
+    )
+
+    logger.info("Spawned background task %s for URL: %s", task_id, url)
+
     return web.json_response(
-        {"status": "accepted", "url": url},
+        {"status": "accepted", "url": url, "task_id": task_id},
         status=202,
     )
+
+
+async def _process_url_background(
+    app: web.Application,
+    task_id: str,
+    url: str,
+) -> None:
+    """Process a URL in the background.
+
+    This function runs asynchronously after the HTTP response is sent.
+    Actual pipeline integration will be added in Issue #44.
+
+    Args:
+        app: The aiohttp application instance.
+        task_id: Unique identifier for this processing task.
+        url: The Twitter/X URL to process.
+    """
+    logger.info("Background task %s started for URL: %s", task_id, url)
+    try:
+        # TODO: Issue #44 will integrate with Pipeline
+        # For now, just log that processing would happen here
+        logger.info("Background task %s completed successfully", task_id)
+    except Exception as e:
+        # Log error but don't re-raise - task is already detached
+        logger.error("Background task %s failed: %s", task_id, e)
+
+
+def _cleanup_task(app: web.Application, task_id: str) -> None:
+    """Remove a completed task from tracking.
+
+    Called as a done callback when the background task finishes.
+
+    Args:
+        app: The aiohttp application instance.
+        task_id: The ID of the task to clean up.
+    """
+    app[BACKGROUND_TASKS_KEY].pop(task_id, None)
+    logger.debug("Cleaned up task %s", task_id)
 
 
 def create_app() -> web.Application:
@@ -120,6 +185,10 @@ def create_app() -> web.Application:
         Configured aiohttp Application with all routes registered.
     """
     app = web.Application()
+
+    # Initialize background task tracking
+    app[BACKGROUND_TASKS_KEY] = {}
+
     app.router.add_get("/health", health_handler)
     app.router.add_post("/process", process_handler)
     return app

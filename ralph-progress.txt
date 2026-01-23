@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 34
-- Commits feitos: 35
+- Issues processadas: 36
+- Commits feitos: 37
 
 ## Histórico de Iterações
 
@@ -266,3 +266,19 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: bd027e2
 - Status: completo
 - Nota: Sprint 6 iniciado - primeira issue completa
+
+## Iteração 36 - 2026-01-23
+- Issue: #40 [6.2] Webhook Server - Authentication
+- Ação: Adicionei bearer token auth ao webhook - check_auth() valida Authorization header, auth opcional quando TWITTER_WEBHOOK_TOKEN não definido (dev mode). 7 novos testes.
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py
+- Commit: b399263
+- Status: completo
+- Nota: Sprint 6 em andamento - próxima issue #41 [6.3] Background Processing
+
+## Iteração 37 - 2026-01-23
+- Issue: #41 [6.3] Webhook Server - Background Processing
+- Ação: Adicionei background processing via asyncio.create_task. POST /process agora spawna task assíncrona e retorna task_id no response. Tasks rastreadas em app state com cleanup automático via done_callback. Usado web.AppKey para type-safe dict access. 7 novos testes.
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py
+- Commit: 04147c5
+- Status: completo
+- Nota: Sprint 6 em andamento - próxima issue #42 [6.4] URL Validation
