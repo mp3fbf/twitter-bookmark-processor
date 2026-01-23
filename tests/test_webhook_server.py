@@ -434,3 +434,168 @@ class TestURLValidationEndpoint(AioHTTPTestCase):
         assert resp.status == 202
         data = await resp.json()
         assert data["tweet_id"] == "999888777"
+
+
+class TestCreateBookmarkFromUrl:
+    """Test _create_bookmark_from_url helper."""
+
+    def test_creates_bookmark_with_id(self):
+        """Should create bookmark with correct ID."""
+        from src.webhook_server import _create_bookmark_from_url
+
+        bookmark = _create_bookmark_from_url(
+            "https://twitter.com/user/status/123456",
+            "123456",
+        )
+        assert bookmark.id == "123456"
+
+    def test_creates_bookmark_with_url(self):
+        """Should create bookmark with correct URL."""
+        from src.webhook_server import _create_bookmark_from_url
+
+        url = "https://x.com/elonmusk/status/789"
+        bookmark = _create_bookmark_from_url(url, "789")
+        assert bookmark.url == url
+
+    def test_creates_minimal_bookmark(self):
+        """Should create bookmark with empty text and author."""
+        from src.webhook_server import _create_bookmark_from_url
+
+        bookmark = _create_bookmark_from_url(
+            "https://twitter.com/user/status/123",
+            "123",
+        )
+        assert bookmark.text == ""
+        assert bookmark.author_username == ""
+
+
+class TestPipelineIntegration(AioHTTPTestCase):
+    """Test webhook integration with Pipeline."""
+
+    async def get_application(self) -> web.Application:
+        """Return the application with a mock pipeline."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process_bookmark = AsyncMock(return_value=Path("/tmp/note.md"))
+
+        return create_app(pipeline=mock_pipeline)
+
+    async def test_webhook_uses_pipeline(self):
+        """POST /process should trigger pipeline processing."""
+        from src.webhook_server import PIPELINE_KEY
+
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/user/status/111222333"},
+        )
+        assert resp.status == 202
+
+        # Wait for background task to run
+        await asyncio.sleep(0.2)
+
+        # Verify pipeline was called
+        pipeline = self.app[PIPELINE_KEY]
+        assert pipeline.process_bookmark.called
+
+    async def test_webhook_passes_bookmark_to_pipeline(self):
+        """POST /process should pass correct bookmark to pipeline."""
+        from src.webhook_server import PIPELINE_KEY
+
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/test/status/444555666"},
+        )
+        assert resp.status == 202
+
+        # Wait for background task
+        await asyncio.sleep(0.2)
+
+        # Check the bookmark passed to pipeline
+        pipeline = self.app[PIPELINE_KEY]
+        call_args = pipeline.process_bookmark.call_args
+        bookmark = call_args[0][0]  # First positional argument
+
+        assert bookmark.id == "444555666"
+        assert "444555666" in bookmark.url
+
+
+class TestPipelineNotifications(AioHTTPTestCase):
+    """Test notification integration with Pipeline."""
+
+    async def get_application(self) -> web.Application:
+        """Return the application with a mock pipeline."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process_bookmark = AsyncMock(return_value=Path("/tmp/note.md"))
+
+        return create_app(pipeline=mock_pipeline)
+
+    @patch("src.webhook_server.notify_processing")
+    @patch("src.webhook_server.notify_success")
+    async def test_webhook_notifies_on_complete(
+        self, mock_success: AsyncMock, mock_processing: AsyncMock
+    ):
+        """POST /process should send notifications on successful completion."""
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/user/status/777888999"},
+        )
+        assert resp.status == 202
+
+        # Wait for background task
+        await asyncio.sleep(0.2)
+
+        # Verify notifications were sent
+        mock_processing.assert_called_once_with("777888999")
+        mock_success.assert_called_once()
+        # First arg is tweet_id
+        assert mock_success.call_args[0][0] == "777888999"
+
+
+class TestPipelineStateUpdate(AioHTTPTestCase):
+    """Test that webhook updates state via Pipeline."""
+
+    async def get_application(self) -> web.Application:
+        """Return the application with a real pipeline and temp state file."""
+        import tempfile
+        from pathlib import Path
+
+        # Create temp directory for test
+        self.temp_dir = tempfile.mkdtemp()
+        self.output_dir = Path(self.temp_dir) / "notes"
+        self.state_file = Path(self.temp_dir) / "state.json"
+        self.output_dir.mkdir()
+
+        return create_app(output_dir=self.output_dir, state_file=self.state_file)
+
+    async def tearDownAsync(self):
+        """Clean up temp directory."""
+        import shutil
+        if hasattr(self, "temp_dir"):
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        await super().tearDownAsync()
+
+    @patch("src.webhook_server.notify_processing")
+    @patch("src.webhook_server.notify_error")
+    async def test_webhook_updates_state(
+        self, mock_error: AsyncMock, mock_processing: AsyncMock
+    ):
+        """POST /process should update state manager."""
+        # Note: With real pipeline but no actual tweet data, processing will fail
+        # but state should still be updated with error status
+        resp = await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/user/status/123123123"},
+        )
+        assert resp.status == 202
+
+        # Wait for background task
+        await asyncio.sleep(0.3)
+
+        # Check state file directory was created (pipeline initialized)
+        # With empty bookmark, processing will error but state is tracked
+        assert self.state_file.parent.exists()

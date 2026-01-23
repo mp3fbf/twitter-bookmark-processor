@@ -8,6 +8,7 @@ Endpoints:
     POST /process - Accepts JSON with URL to process, returns 202 Accepted
                    Requires Bearer token authentication when TWITTER_WEBHOOK_TOKEN is set.
                    Processing happens asynchronously in a background task.
+                   Uses Pipeline to process bookmarks and sends notifications on completion.
 """
 
 import asyncio
@@ -16,14 +17,23 @@ import logging
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+
+from src.core.bookmark import Bookmark
+from src.core.config import get_config
+from src.core.notifier import notify_error, notify_processing, notify_success
+from src.core.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
 # AppKey for storing background tasks (typed dict access)
 BACKGROUND_TASKS_KEY = web.AppKey("background_tasks", dict[str, asyncio.Task])
+
+# AppKey for storing the pipeline instance
+PIPELINE_KEY = web.AppKey("pipeline", Pipeline)
 
 # Regex pattern for Twitter/X status URLs
 # Matches: twitter.com/user/status/123 or x.com/user/status/456
@@ -193,29 +203,85 @@ async def process_handler(request: web.Request) -> web.Response:
     )
 
 
+def _create_bookmark_from_url(url: str, tweet_id: str) -> Bookmark:
+    """Create a minimal Bookmark from a URL for webhook processing.
+
+    Since we only have the URL (not full Twillot export data), we create
+    a minimal Bookmark with just the essentials. The Pipeline and processors
+    will fetch additional data as needed.
+
+    Args:
+        url: The Twitter/X URL.
+        tweet_id: The extracted tweet ID.
+
+    Returns:
+        A Bookmark instance with minimal data.
+    """
+    return Bookmark(
+        id=tweet_id,
+        url=url,
+        text="",  # Will be fetched by processor if needed
+        author_username="",  # Will be extracted from URL or fetched
+    )
+
+
 async def _process_url_background(
     app: web.Application,
     task_id: str,
     url: str,
 ) -> None:
-    """Process a URL in the background.
+    """Process a URL in the background using the Pipeline.
 
     This function runs asynchronously after the HTTP response is sent.
-    Actual pipeline integration will be added in Issue #44.
+    Uses the Pipeline to classify and process the bookmark, then sends
+    notifications on completion or failure.
 
     Args:
         app: The aiohttp application instance.
         task_id: Unique identifier for this processing task.
         url: The Twitter/X URL to process.
     """
-    logger.info("Background task %s started for URL: %s", task_id, url)
+    tweet_id = extract_tweet_id(url)
+    if not tweet_id:
+        logger.error("Background task %s: invalid URL %s", task_id, url)
+        return
+
+    logger.info("Background task %s started for URL: %s (tweet_id=%s)", task_id, url, tweet_id)
+
+    # Send processing notification
+    notify_processing(tweet_id)
+
     try:
-        # TODO: Issue #44 will integrate with Pipeline
-        # For now, just log that processing would happen here
-        logger.info("Background task %s completed successfully", task_id)
+        # Get the pipeline from app state
+        pipeline = app.get(PIPELINE_KEY)
+        if pipeline is None:
+            raise RuntimeError("Pipeline not initialized in app state")
+
+        # Create bookmark from URL
+        bookmark = _create_bookmark_from_url(url, tweet_id)
+
+        # Process the bookmark
+        output_path = await pipeline.process_bookmark(bookmark)
+
+        if output_path:
+            # Success - notify with content type
+            content_type = bookmark.content_type.value.upper()
+            notify_success(tweet_id, content_type)
+            logger.info(
+                "Background task %s completed successfully: %s -> %s",
+                task_id,
+                tweet_id,
+                output_path,
+            )
+        else:
+            # Skipped (already processed) or unsupported
+            logger.info("Background task %s: bookmark %s was skipped", task_id, tweet_id)
+
     except Exception as e:
-        # Log error but don't re-raise - task is already detached
-        logger.error("Background task %s failed: %s", task_id, e)
+        # Log error and send notification
+        error_msg = str(e)
+        logger.error("Background task %s failed: %s", task_id, error_msg)
+        notify_error(tweet_id, error_msg)
 
 
 def _cleanup_task(app: web.Application, task_id: str) -> None:
@@ -231,8 +297,18 @@ def _cleanup_task(app: web.Application, task_id: str) -> None:
     logger.debug("Cleaned up task %s", task_id)
 
 
-def create_app() -> web.Application:
+def create_app(
+    pipeline: Pipeline | None = None,
+    output_dir: Path | None = None,
+    state_file: Path | None = None,
+) -> web.Application:
     """Create and configure the aiohttp application.
+
+    Args:
+        pipeline: Optional Pipeline instance. If not provided, creates one using
+            output_dir and state_file (or defaults from config).
+        output_dir: Directory for Obsidian notes output. Defaults to config value.
+        state_file: Path to state JSON file. Defaults to config value.
 
     Returns:
         Configured aiohttp Application with all routes registered.
@@ -241,6 +317,23 @@ def create_app() -> web.Application:
 
     # Initialize background task tracking
     app[BACKGROUND_TASKS_KEY] = {}
+
+    # Initialize pipeline
+    if pipeline is not None:
+        app[PIPELINE_KEY] = pipeline
+    else:
+        # Use provided paths or load from config
+        if output_dir is None or state_file is None:
+            try:
+                config = get_config(require_api_key=False)
+                output_dir = output_dir or config.output_dir
+                state_file = state_file or config.state_file
+            except Exception:
+                # Fallback defaults for testing without config
+                output_dir = output_dir or Path("/workspace/notes/twitter/")
+                state_file = state_file or Path("data/state.json")
+
+        app[PIPELINE_KEY] = Pipeline(output_dir=output_dir, state_file=state_file)
 
     app.router.add_get("/health", health_handler)
     app.router.add_post("/process", process_handler)
