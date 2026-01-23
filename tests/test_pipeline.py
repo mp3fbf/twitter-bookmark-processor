@@ -757,3 +757,229 @@ class TestPipelineRouting:
         # Verify it was treated as a tweet
         content = output_path.read_text()
         assert "type: tweet" in content
+
+    def test_pipeline_has_link_processor(self, pipeline: Pipeline):
+        """Pipeline has LinkProcessor registered."""
+        from src.processors.link_processor import LinkProcessor
+
+        assert ContentType.LINK in pipeline._processors
+        assert isinstance(pipeline._processors[ContentType.LINK], LinkProcessor)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_routes_link_correctly(
+        self,
+        pipeline: Pipeline,
+    ):
+        """LINK bookmark is routed to LinkProcessor."""
+        from unittest.mock import AsyncMock, patch
+
+        # Bookmark with external link (not Twitter/YouTube)
+        bookmark = Bookmark(
+            id="route_link",
+            url="https://twitter.com/user/status/route_link",
+            text="Check out this article",
+            author_username="user",
+            links=["https://example.com/article"],
+        )
+
+        # Mock the LinkProcessor.process method
+        with patch.object(
+            pipeline._processors[ContentType.LINK],
+            "process",
+            new_callable=AsyncMock,
+        ) as mock_process:
+            from src.processors.base import ProcessResult
+            mock_process.return_value = ProcessResult(
+                success=True,
+                content="Link content",
+                title="Article Title",
+                tags=["article"],
+                metadata={
+                    "source_url": "https://example.com/article",
+                    "tldr": "A test article",
+                    "key_points": ["Point 1"],
+                },
+            )
+
+            await pipeline.process_bookmark(bookmark)
+
+            # Verify LinkProcessor was called
+            mock_process.assert_called_once()
+
+
+class TestPipelineLinkE2E:
+    """End-to-end tests for link processing through the pipeline."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        """Create a path for state file."""
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        """Create a pipeline instance."""
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    @pytest.fixture
+    def mock_link_llm_response(self):
+        """Sample successful LLM extraction for a link."""
+        return {
+            "title": "Understanding Python Async",
+            "tldr": "A deep dive into async/await patterns in Python.",
+            "key_points": [
+                "Async functions use await to pause",
+                "Event loop manages concurrent tasks",
+                "asyncio.gather runs multiple coroutines",
+            ],
+            "tags": ["python", "async", "programming"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_pipeline_link_e2e(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+        mock_link_llm_response,
+    ):
+        """Export with link → LLM extraction → note generated."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Create export with a bookmark that has an external link
+        export_data = [
+            {
+                "tweet_id": "link_001",
+                "url": "https://twitter.com/user/status/link_001",
+                "full_text": "Great article on Python async https://example.com/python-async",
+                "screen_name": "pythonista",
+                "urls": [
+                    {"expanded_url": "https://example.com/python-async"}
+                ],
+            }
+        ]
+        export_path = tmp_path / "link_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        # Mock HTTP response
+        mock_response = MagicMock()
+        mock_response.text = """
+        <html>
+        <head><title>Understanding Python Async</title></head>
+        <body>
+            <h1>Understanding Python Async</h1>
+            <p>This is a comprehensive guide to async programming in Python.</p>
+            <p>Learn about coroutines, the event loop, and best practices.</p>
+        </body>
+        </html>
+        """
+        mock_response.raise_for_status = MagicMock()
+
+        # Mock LLM client
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.return_value = mock_link_llm_response
+
+        # Patch both HTTP client and LLM client
+        with patch(
+            "src.processors.link_processor.create_client"
+        ) as mock_create_client, patch(
+            "src.processors.link_processor.get_llm_client",
+            return_value=mock_llm,
+        ):
+            # Create async context manager mock for httpx client
+            mock_client = MagicMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create_client.return_value = mock_client
+
+            result = await pipeline.process_export(export_path)
+
+        assert result.processed == 1
+        assert result.failed == 0
+
+        # Verify note was created
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 1
+
+        # Verify note content has link-specific fields
+        note_content = notes[0].read_text()
+        assert "type: link" in note_content
+        # Link content has Source section with the external URL
+        assert "## Source" in note_content
+        assert "example.com/python-async" in note_content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_link_uses_cache(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+        mock_link_llm_response,
+    ):
+        """Second link processing uses cache, not LLM."""
+        from unittest.mock import MagicMock, patch
+
+        from src.core.link_cache import LinkCache
+
+        # Create a cache with pre-populated data
+        cache_dir = tmp_path / "cache"
+        cache = LinkCache(cache_dir)
+        test_url = "https://example.com/cached-article"
+        cache.set(test_url, mock_link_llm_response)
+
+        # Create export with a bookmark that has the cached URL
+        export_data = [
+            {
+                "tweet_id": "link_cached",
+                "url": "https://twitter.com/user/status/link_cached",
+                "full_text": "Check this out",
+                "screen_name": "user",
+                "urls": [{"expanded_url": test_url}],
+            }
+        ]
+        export_path = tmp_path / "cache_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        # Mock HTTP response (still needed for fetching)
+        mock_response = MagicMock()
+        mock_response.text = "<html><body>Cached content</body></html>"
+        mock_response.raise_for_status = MagicMock()
+
+        # Track if LLM was called
+        llm_called = False
+
+        def track_llm_call(*args, **kwargs):
+            nonlocal llm_called
+            llm_called = True
+            return mock_link_llm_response
+
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.side_effect = track_llm_call
+
+        # Inject cache into the pipeline's link processor
+        pipeline._processors[ContentType.LINK]._cache = cache
+
+        with patch(
+            "src.processors.link_processor.create_client"
+        ) as mock_create_client, patch(
+            "src.processors.link_processor.get_llm_client",
+            return_value=mock_llm,
+        ):
+            from unittest.mock import AsyncMock
+
+            mock_client = MagicMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_create_client.return_value = mock_client
+
+            result = await pipeline.process_export(export_path)
+
+        assert result.processed == 1
+        # LLM should NOT have been called since cache was hit
+        assert not llm_called

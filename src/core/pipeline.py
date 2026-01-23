@@ -16,6 +16,7 @@ from src.core.bookmark import ContentType, ProcessingStatus
 from src.core.classifier import classify
 from src.core.state_manager import StateManager
 from src.output.obsidian_writer import ObsidianWriter
+from src.processors.link_processor import LinkProcessor
 from src.processors.thread_processor import ThreadProcessor
 from src.processors.tweet_processor import TweetProcessor
 from src.processors.video_processor import VideoProcessor
@@ -60,8 +61,7 @@ class Pipeline:
     5. Write output via ObsidianWriter
     6. Update state tracking
 
-    Supports TWEET, VIDEO, and THREAD content types.
-    LINK processor will be added in Sprint 4.
+    Supports TWEET, VIDEO, THREAD, and LINK content types.
     """
 
     def __init__(
@@ -84,6 +84,7 @@ class Pipeline:
             ContentType.TWEET: TweetProcessor(),
             ContentType.VIDEO: VideoProcessor(output_dir=output_dir),
             ContentType.THREAD: ThreadProcessor(output_dir=output_dir),
+            ContentType.LINK: LinkProcessor(),
         }
 
     async def process_export(
