@@ -59,6 +59,16 @@ class ParseError(ProcessorError):
     retryable: bool = False
 
 
+class ExtractionError(ProcessorError):
+    """LLM extraction failed.
+
+    The LLM was unable to extract structured data from content.
+    May be retryable for transient API errors.
+    """
+
+    retryable: bool = True
+
+
 class ConfigurationError(Exception):
     """Invalid configuration.
 

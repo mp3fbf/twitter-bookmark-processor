@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 7
-- Commits feitos: 8
+- Issues processadas: 21
+- Commits feitos: 22
 
 ## Histórico de Iterações
 
@@ -31,29 +31,139 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Status: completo
 
 ## Iteração 4 - 2026-01-23
+- Issue: #6 [1.4] State Manager - Atomic Writes
+- Ação: Adicionei atomic writes (temp file + os.replace) e file locking (fcntl.flock) + 4 novos testes
+- Arquivos: src/core/state_manager.py, tests/test_state_manager.py
+- Commit: 17d6e94
+- Status: completo
+
+## Iteração 5 - 2026-01-23
 - Issue: #7 [1.5] Twillot Reader - Parse Export
 - Ação: Implementei parser para JSON export do Twillot com mapeamento de campos, extração de URLs e 24 testes
 - Arquivos: src/sources/twillot_reader.py, tests/test_twillot_reader.py
 - Commit: 71d83a7
 - Status: completo
 
-## Iteração 5 - 2026-01-23
+## Iteração 6 - 2026-01-23
 - Issue: #8 [1.6] Twillot Reader - Thread Detection Fields
-- Ação: Adicionei 9 testes para campos de detecção de thread (conversation_id, in_reply_to_user_id, author_id) e extração de in_reply_to_user_id
+- Ação: Adicionei 9 testes para campos de detecção de thread (conversation_id, in_reply_to_user_id, author_id)
 - Arquivos: src/sources/twillot_reader.py, tests/test_twillot_reader.py
 - Commit: ec04782
 - Status: completo
 
-## Iteração 6 - 2026-01-23
+## Iteração 7 - 2026-01-23
 - Issue: #9 [1.7] Configuration Manager
 - Ação: Implementei Config dataclass com validação, load_config() para env vars, get_config() singleton + 20 testes
 - Arquivos: src/core/config.py, tests/test_config.py
 - Commit: c5bba43
 - Status: completo
 
-## Iteração 7 - 2026-01-23
-- Issue: #13 [2.3] Classifier - Link & Tweet Detection
-- Ação: Implementei detecção de LINK para URLs externas (github, medium, substack), ignorando Twitter/X e t.co. Adicionei 13 novos testes.
+## Iteração 8 - 2026-01-23
+- Issue: #11 [2.1] Classifier - Video Detection (YouTube-only)
+- Ação: Implementei classifier com detecção VIDEO (video_urls, YouTube) + warning para plataformas não suportadas + 11 testes
 - Arquivos: src/core/classifier.py, tests/test_classifier.py
-- Commit: a1d5c06
+- Commit: 630fc87
 - Status: completo
+
+## Iteração 9 - 2026-01-23
+- Issue: #12 [2.2] Classifier - Thread Detection
+- Ação: Implementei detecção THREAD com 3 métodos: conversation_id, reply-to-self, heurísticas (2+ sinais) + 17 testes
+- Arquivos: src/core/classifier.py, tests/test_classifier.py
+- Commit: b2ee7ed
+- Status: completo
+
+## Iteração 10 - 2026-01-23
+- Issue: #14 [2.4] Base Processor Interface
+- Ação: Implementei BaseProcessor ABC e ProcessResult dataclass com 16 testes
+- Arquivos: src/processors/base.py, tests/test_processors_base.py
+- Commit: 9982258
+- Status: completo
+
+## Iteração 11 - 2026-01-23
+- Issue: #15 [2.5] Tweet Processor
+- Ação: Implementei TweetProcessor com extração de título (8 palavras max), hashtags como tags, formatação markdown + 18 testes
+- Arquivos: src/processors/tweet_processor.py, tests/test_tweet_processor.py
+- Commit: c8a9ccb
+- Status: completo
+
+## Iteração 12 - 2026-01-23
+- Issue: #16 [2.6] Obsidian Writer - Core
+- Ação: Implementei ObsidianWriter com YAML frontmatter, sanitização de filename, collision handling + 18 testes
+- Arquivos: src/output/obsidian_writer.py, tests/test_obsidian_writer.py
+- Commit: ed42e2c
+- Status: completo
+
+## Iteração 13 - 2026-01-23
+- Issue: #17 [2.7] Obsidian Writer - Templates
+- Ação: Migrei ObsidianWriter para Jinja2 templates com base.md.j2 (frontmatter + footer) e tweet.md.j2 (TL;DR + Content) + 2 novos testes
+- Arquivos: src/output/obsidian_writer.py, src/output/templates/base.md.j2, src/output/templates/tweet.md.j2, tests/test_obsidian_writer.py
+- Commit: 6f8db6d
+- Status: completo
+
+## Iteração 14 - 2026-01-23
+- Issue: #18 [2.8] End-to-End Tweet Processing
+- Ação: Implementei Pipeline class integrando twillot_reader → classifier → tweet_processor → obsidian_writer com state tracking + 15 testes
+- Arquivos: src/core/pipeline.py, tests/test_pipeline.py
+- Commit: 210e431
+- Status: completo
+
+## Iteração 15 - 2026-01-23
+- Issue: #19 [3.1] Video Processor - Skill Integration
+- Ação: Implementei VideoProcessor chamando /youtube-video skill via subprocess, parseamento JSON, handling de timeout e erros + 14 testes
+- Arquivos: src/processors/video_processor.py, tests/test_video_processor.py
+- Commit: 7544fa8
+- Status: completo
+
+## Iteração 16 - 2026-01-23
+- Issue: #20 [3.2] Video Processor - Output Handling
+- Ação: Adicionei output_file ao ProcessResult, output_dir ao VideoProcessor, extração de arquivo gerado do stderr + 5 novos testes
+- Arquivos: src/processors/base.py, src/processors/video_processor.py, tests/test_video_processor.py
+- Commit: c6aa015
+- Status: completo
+
+## Iteração 17 - 2026-01-23
+- Issue: #21 [3.3] Thread Processor - Skill Integration
+- Ação: Implementei ThreadProcessor chamando /twitter skill via subprocess (--thread --json), parsing JSON, handling de threads deletadas e timeout + 15 testes
+- Arquivos: src/processors/thread_processor.py, tests/test_thread_processor.py
+- Commit: ac16def
+- Status: completo
+
+## Iteração 18 - 2026-01-23
+- Issue: #23 [3.5] Thread Template
+- Ação: Adicionei thread.md.j2 template com contagem de tweets, tweets numerados, seção Key Points. Adicionei metadata field ao ProcessResult. Atualizei ObsidianWriter para rotear THREAD para template correto + 8 novos testes
+- Arquivos: src/output/templates/thread.md.j2, src/output/obsidian_writer.py, src/processors/base.py, src/processors/thread_processor.py, tests/test_obsidian_writer.py
+- Commit: 223a2b4
+- Status: completo
+- Nota: Issue #22 PULADA - requer LLM para extração de key_points (Sprint 4)
+
+## Iteração 19 - 2026-01-23
+- Issue: #24 [3.6] Video Template
+- Ação: Adicionei video.md.j2 template com channel, duration, thumbnail, TL;DR, key_points (com timestamps), transcript. Atualizei ObsidianWriter para rotear VIDEO para template correto + 9 novos testes
+- Arquivos: src/output/templates/video.md.j2, src/output/obsidian_writer.py, tests/test_obsidian_writer.py
+- Commit: e17b220
+- Status: completo
+- Nota: Issue #22 continua pulada (high-risk, requer LLM client do Sprint 4)
+
+## Iteração 20 - 2026-01-23
+- Issue: #25 [3.7] Pipeline - Video & Thread Support
+- Ação: Integrei VideoProcessor e ThreadProcessor no Pipeline. Adicionei imports, registrei processors no dict _processors, adicionei 8 novos testes (video e2e, thread e2e, routing tests para VIDEO/THREAD/TWEET)
+- Arquivos: src/core/pipeline.py, tests/test_pipeline.py
+- Commit: 75813df
+- Status: completo
+- Nota: Sprint 3 COMPLETO (issue #22 pulada para Sprint 4 - requer LLM)
+
+## Iteração 21 - 2026-01-23
+- Issue: #26 [4.1] HTTP Client Setup
+- Ação: Implementei httpx client com timeouts configuráveis (10s connect, 30s read), User-Agent customizado, redirect following, singleton para connection pooling + 18 testes
+- Arquivos: src/core/http_client.py, tests/test_http_client.py
+- Commit: 7c524e5
+- Status: completo
+- Nota: Issue #22 PULADA - high-risk, requer LLM client (issue #28)
+
+## Iteração 22 - 2026-01-23
+- Issue: #27 [4.2] Link Content Fetcher
+- Ação: Implementei LinkProcessor com fetch HTTP via httpx, HTMLTextExtractor para extrair texto limpo (fix para void elements), tratamento de timeout/404/500, extração de título + 20 testes
+- Arquivos: src/processors/link_processor.py, tests/test_link_processor.py
+- Commit: 792aea3
+- Status: completo
+- Nota: Issue #22 continua pulada (high-risk, requer LLM client - issue #28)
