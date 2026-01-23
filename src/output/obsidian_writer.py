@@ -2,6 +2,7 @@
 
 Generates markdown files with YAML frontmatter for Obsidian.
 Each processed bookmark becomes a note in the output directory.
+Uses Jinja2 templates for flexible content generation.
 """
 
 import re
@@ -9,9 +10,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from jinja2 import Environment, FileSystemLoader
+
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
     from src.processors.base import ProcessResult
+
+# Processor version for footer
+PROCESSOR_VERSION = "0.1.0"
+
+# Path to templates directory
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 def sanitize_filename(text: str) -> str:
@@ -66,11 +75,33 @@ def escape_yaml_string(value: str) -> str:
     return value
 
 
+def _yaml_escape_filter(value: str) -> str:
+    """Jinja2 filter for YAML escaping."""
+    return escape_yaml_string(value)
+
+
+def _create_jinja_env() -> Environment:
+    """Create and configure Jinja2 environment.
+
+    Returns:
+        Configured Jinja2 Environment
+    """
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    env.filters['yaml_escape'] = _yaml_escape_filter
+    return env
+
+
 class ObsidianWriter:
     """Writes processed bookmarks as Obsidian markdown notes.
 
     Creates markdown files with YAML frontmatter containing metadata,
-    followed by the processed content body.
+    followed by the processed content body. Uses Jinja2 templates
+    for flexible formatting per content type.
     """
 
     def __init__(self, output_dir: Path):
@@ -80,6 +111,7 @@ class ObsidianWriter:
             output_dir: Directory where notes will be written
         """
         self.output_dir = output_dir
+        self._env = _create_jinja_env()
 
     def write(
         self,
@@ -113,74 +145,91 @@ class ObsidianWriter:
             filename = f"{safe_title} - {bookmark.id}.md"
             output_path = self.output_dir / filename
 
-        # Build frontmatter
-        frontmatter = self._build_frontmatter(bookmark, result)
-
-        # Build full content
-        content = self._build_content(frontmatter, result.content or "")
+        # Render content using template
+        content = self._render_template(bookmark, result)
 
         # Write file
         output_path.write_text(content, encoding="utf-8")
 
         return output_path
 
-    def _build_frontmatter(
+    def _get_template_name(self, bookmark: "Bookmark") -> str:
+        """Get the template name for the bookmark's content type.
+
+        Args:
+            bookmark: Bookmark to get template for
+
+        Returns:
+            Template filename
+        """
+        # Map content type to template
+        # For now, all types use tweet.md.j2
+        # Future: thread.md.j2, video.md.j2, link.md.j2
+        return "tweet.md.j2"
+
+    def _render_template(
         self,
         bookmark: "Bookmark",
         result: "ProcessResult",
     ) -> str:
-        """Build YAML frontmatter for the note.
+        """Render a template with bookmark and result data.
 
         Args:
             bookmark: Original bookmark data
-            result: Processing result with tags
+            result: Processing result with content and tags
 
         Returns:
-            YAML frontmatter string including delimiters
+            Rendered markdown content
         """
-        lines = ["---"]
+        template_name = self._get_template_name(bookmark)
+        template = self._env.get_template(template_name)
 
-        # Title
+        # Prepare context for template
         title = result.title or "Untitled"
-        lines.append(f"title: {escape_yaml_string(title)}")
-
-        # Author
-        lines.append(f"author: {escape_yaml_string('@' + bookmark.author_username)}")
-
-        # Source URL
-        lines.append(f"source: {bookmark.url}")
-
-        # Content type
-        lines.append(f"type: {bookmark.content_type.value}")
-
-        # Tags
-        if result.tags:
-            lines.append("tags:")
-            for tag in result.tags:
-                lines.append(f"  - {escape_yaml_string(tag)}")
-
-        # Dates
-        if bookmark.created_at:
-            lines.append(f"tweet_date: {escape_yaml_string(bookmark.created_at)}")
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines.append(f"processed_at: {now}")
 
-        # Bookmark ID for reference
-        lines.append(f"tweet_id: {bookmark.id}")
+        # Extract TL;DR from content (first line or title)
+        body = result.content or ""
+        tldr = self._extract_tldr(body, title)
 
-        lines.append("---")
+        context = {
+            "title": title,
+            "author": "@" + bookmark.author_username,
+            "source": bookmark.url,
+            "content_type": bookmark.content_type.value,
+            "tags": result.tags or [],
+            "tweet_date": bookmark.created_at,
+            "processed_at": now,
+            "tweet_id": bookmark.id,
+            "processor_version": PROCESSOR_VERSION,
+            "tldr": tldr,
+            "body": body,
+        }
 
-        return "\n".join(lines)
+        return template.render(**context)
 
-    def _build_content(self, frontmatter: str, body: str) -> str:
-        """Combine frontmatter and body into final content.
+    def _extract_tldr(self, content: str, title: str) -> str:
+        """Extract a TL;DR summary from content.
 
         Args:
-            frontmatter: YAML frontmatter with delimiters
-            body: Markdown content body
+            content: Full content body
+            title: Title as fallback
 
         Returns:
-            Complete markdown file content
+            Short summary string
         """
-        return f"{frontmatter}\n\n{body}\n"
+        if not content:
+            return title
+
+        # Use first non-empty line as TL;DR if it's short enough
+        lines = content.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            # Skip markdown formatting lines
+            if line and not line.startswith('#') and not line.startswith('**'):
+                if len(line) <= 280:  # Tweet-length limit
+                    return line
+                # Truncate long lines
+                return line[:277] + "..."
+
+        return title

@@ -1,0 +1,22 @@
+---
+title: {{ title | yaml_escape }}
+author: {{ author | yaml_escape }}
+source: {{ source }}
+type: {{ content_type }}
+{% if tags %}
+tags:
+{% for tag in tags %}
+  - {{ tag | yaml_escape }}
+{% endfor %}
+{% endif %}
+{% if tweet_date %}
+tweet_date: {{ tweet_date | yaml_escape }}
+{% endif %}
+processed_at: {{ processed_at }}
+tweet_id: {{ tweet_id }}
+---
+
+{% block content %}{% endblock %}
+
+---
+*Processed by twitter-bookmark-processor v{{ processor_version }}*

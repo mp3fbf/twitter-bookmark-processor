@@ -311,3 +311,70 @@ class TestObsidianWriter:
 
             # Clean up for next iteration
             output_path.unlink()
+
+
+class TestTemplateStructure:
+    """Tests for Jinja2 template structure."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def writer(self, output_dir: Path) -> ObsidianWriter:
+        """Create a writer instance."""
+        return ObsidianWriter(output_dir)
+
+    @pytest.fixture
+    def sample_bookmark(self) -> Bookmark:
+        """Create a sample bookmark for testing."""
+        return Bookmark(
+            id="1234567890",
+            url="https://twitter.com/testuser/status/1234567890",
+            text="This is a test tweet about Python programming",
+            author_username="testuser",
+            author_name="Test User",
+            content_type=ContentType.TWEET,
+            created_at="2024-01-15T10:30:00Z",
+        )
+
+    @pytest.fixture
+    def sample_result(self) -> ProcessResult:
+        """Create a sample process result for testing."""
+        return ProcessResult(
+            success=True,
+            title="This is a test tweet",
+            content="**Test User** (@testuser)\n\nThis is a test tweet about Python programming",
+            tags=["python", "programming"],
+        )
+
+    def test_tweet_template_structure(
+        self,
+        writer: ObsidianWriter,
+        sample_bookmark: Bookmark,
+        sample_result: ProcessResult,
+    ):
+        """Tweet template should have TL;DR and Content sections."""
+        output_path = writer.write(sample_bookmark, sample_result)
+        content = output_path.read_text()
+
+        # Should have TL;DR section
+        assert "## TL;DR" in content
+
+        # Should have Content section
+        assert "## Content" in content
+
+    def test_template_includes_footer(
+        self,
+        writer: ObsidianWriter,
+        sample_bookmark: Bookmark,
+        sample_result: ProcessResult,
+    ):
+        """Template should include footer with processor version."""
+        output_path = writer.write(sample_bookmark, sample_result)
+        content = output_path.read_text()
+
+        # Should have footer with version
+        assert "twitter-bookmark-processor v" in content
+        assert "0.1.0" in content
