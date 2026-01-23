@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 2
-- Commits feitos: 3
+- Issues processadas: 3
+- Commits feitos: 4
 
 ## Histórico de Iterações
 
@@ -21,4 +21,11 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Ação: Implementei ContentType, ProcessingStatus enums e Bookmark dataclass com 26 testes
 - Arquivos: src/core/bookmark.py, tests/test_bookmark.py
 - Commit: aeace17
+- Status: completo
+
+## Iteração 3 - 2026-01-23
+- Issue: #5 [1.3] State Manager - Core
+- Ação: Implementei StateManager com load/save JSON, is_processed(), mark_processed(), get_stats() + 18 testes
+- Arquivos: src/core/state_manager.py, tests/test_state_manager.py
+- Commit: eb257fd
 - Status: completo
