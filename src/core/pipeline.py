@@ -5,8 +5,12 @@ twillot_reader → classifier → processor → obsidian_writer
 
 This is the main orchestrator that takes Twillot exports and produces
 Obsidian notes while tracking state to avoid reprocessing.
+
+Supports concurrent processing with rate limiting to avoid overwhelming
+external services while maximizing throughput.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from src.core.bookmark import ContentType, ProcessingStatus
 from src.core.classifier import classify
+from src.core.rate_limiter import RateLimiter
 from src.core.state_manager import StateManager
 from src.output.obsidian_writer import ObsidianWriter
 from src.processors.link_processor import LinkProcessor
@@ -62,22 +67,30 @@ class Pipeline:
     6. Update state tracking
 
     Supports TWEET, VIDEO, THREAD, and LINK content types.
+    Processes bookmarks concurrently with per-content-type rate limiting.
     """
 
     def __init__(
         self,
         output_dir: Path,
         state_file: Path,
+        rate_limiter: RateLimiter | None = None,
+        max_concurrency: int = 10,
     ):
         """Initialize pipeline with output and state paths.
 
         Args:
             output_dir: Directory where Obsidian notes will be written
             state_file: Path to JSON file for state persistence
+            rate_limiter: Optional rate limiter instance (creates new if not provided)
+            max_concurrency: Maximum concurrent bookmark processing tasks (default 10)
         """
         self.output_dir = output_dir
         self.state_manager = StateManager(state_file)
         self.writer = ObsidianWriter(output_dir)
+        self._rate_limiter = rate_limiter or RateLimiter()
+        self._max_concurrency = max_concurrency
+        self._concurrency_semaphore = asyncio.Semaphore(max_concurrency)
 
         # Processors by content type
         self._processors = {
@@ -91,10 +104,10 @@ class Pipeline:
         self,
         export_path: Path,
     ) -> PipelineResult:
-        """Process a Twillot export file.
+        """Process a Twillot export file concurrently.
 
-        Reads bookmarks from the export, classifies them, processes each
-        through the appropriate processor, and writes Obsidian notes.
+        Reads bookmarks from the export, classifies them, and processes
+        multiple bookmarks in parallel with rate limiting.
 
         Args:
             export_path: Path to Twillot JSON export file
@@ -108,25 +121,38 @@ class Pipeline:
         bookmarks = parse_twillot_export(export_path)
         logger.info("Parsed %d bookmarks from %s", len(bookmarks), export_path)
 
-        for bookmark in bookmarks:
-            try:
-                processed = await self._process_single(bookmark)
-                if processed:
-                    result.processed += 1
-                else:
-                    result.skipped += 1
-            except Exception as e:
+        # Create tasks for all bookmarks
+        tasks = [
+            self._process_single_with_result(bookmark)
+            for bookmark in bookmarks
+        ]
+
+        # Process concurrently, collecting results (including exceptions)
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Aggregate results
+        for i, task_result in enumerate(task_results):
+            bookmark = bookmarks[i]
+
+            if isinstance(task_result, Exception):
+                # Task raised an exception
                 result.failed += 1
-                error_msg = f"Bookmark {bookmark.id}: {e}"
+                error_msg = f"Bookmark {bookmark.id}: {task_result}"
                 result.errors.append(error_msg)
-                logger.error("Failed to process %s: %s", bookmark.id, e)
+                logger.error("Failed to process %s: %s", bookmark.id, task_result)
 
                 # Mark as error in state
                 self.state_manager.mark_processed(
                     bookmark.id,
                     ProcessingStatus.ERROR,
-                    error=str(e),
+                    error=str(task_result),
                 )
+            elif task_result is None:
+                # Skipped (already processed or unsupported)
+                result.skipped += 1
+            else:
+                # Successfully processed
+                result.processed += 1
 
         logger.info(
             "Pipeline complete: processed=%d, skipped=%d, failed=%d",
@@ -137,6 +163,39 @@ class Pipeline:
 
         return result
 
+    async def _process_single_with_result(
+        self,
+        bookmark: "Bookmark",
+    ) -> Path | None:
+        """Process a single bookmark with concurrency and rate limiting.
+
+        Wrapper around _process_single that:
+        1. Limits overall concurrency via semaphore
+        2. Applies rate limiting based on content type
+
+        Args:
+            bookmark: The bookmark to process
+
+        Returns:
+            Path to generated note, or None if skipped
+        """
+        # Limit overall concurrency
+        async with self._concurrency_semaphore:
+            # Check if already processed (before classification to save work)
+            if self.state_manager.is_processed(bookmark.id):
+                logger.debug("Skipping already processed bookmark: %s", bookmark.id)
+                return None
+
+            # Classify content type
+            bookmark.content_type = classify(bookmark)
+            logger.debug("Classified %s as %s", bookmark.id, bookmark.content_type.value)
+
+            # Apply rate limiting based on content type
+            async with self._rate_limiter.acquire_context_for_content(
+                bookmark.content_type
+            ):
+                return await self._process_single(bookmark)
+
     async def process_bookmark(
         self,
         bookmark: "Bookmark",
@@ -144,6 +203,7 @@ class Pipeline:
         """Process a single bookmark.
 
         Public method for processing individual bookmarks (e.g., from webhook).
+        Applies rate limiting based on content type.
 
         Args:
             bookmark: The bookmark to process
@@ -152,7 +212,7 @@ class Pipeline:
             Path to generated note, or None if skipped/failed
         """
         try:
-            return await self._process_single(bookmark)
+            return await self._process_single_with_result(bookmark)
         except Exception as e:
             logger.error("Failed to process %s: %s", bookmark.id, e)
             self.state_manager.mark_processed(
@@ -168,21 +228,15 @@ class Pipeline:
     ) -> Path | None:
         """Process a single bookmark internally.
 
+        Note: State check and classification should be done before calling this.
+        This method assumes bookmark.content_type is already set.
+
         Args:
-            bookmark: The bookmark to process
+            bookmark: The bookmark to process (with content_type already set)
 
         Returns:
             Path to generated note, or None if skipped
         """
-        # Check if already processed
-        if self.state_manager.is_processed(bookmark.id):
-            logger.debug("Skipping already processed bookmark: %s", bookmark.id)
-            return None
-
-        # Classify content type
-        bookmark.content_type = classify(bookmark)
-        logger.debug("Classified %s as %s", bookmark.id, bookmark.content_type.value)
-
         # Get processor for content type
         processor = self._processors.get(bookmark.content_type)
         if processor is None:

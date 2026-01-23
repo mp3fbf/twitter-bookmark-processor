@@ -807,6 +807,169 @@ class TestPipelineRouting:
             mock_process.assert_called_once()
 
 
+class TestPipelineConcurrency:
+    """Tests for concurrent processing in pipeline."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        """Create a path for state file."""
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        """Create a pipeline instance."""
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_processes_batch(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+    ):
+        """10 bookmarks are all processed successfully."""
+        # Create export with 10 bookmarks
+        export_data = [
+            {
+                "tweet_id": f"batch_{i:04d}",
+                "url": f"https://twitter.com/user{i}/status/batch_{i:04d}",
+                "full_text": f"Tweet number {i} about topic {i % 3}",
+                "screen_name": f"user{i}",
+            }
+            for i in range(10)
+        ]
+        export_path = tmp_path / "batch_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        result = await pipeline.process_export(export_path)
+
+        assert result.processed == 10
+        assert result.skipped == 0
+        assert result.failed == 0
+        assert result.errors == []
+
+        # Verify all notes were created
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 10
+
+    @pytest.mark.asyncio
+    async def test_pipeline_respects_rate_limits(
+        self,
+        tmp_path: Path,
+    ):
+        """Processing respects rate limits (timing verified)."""
+        import time
+
+        from src.core.rate_limiter import RateConfig, RateLimiter, RateType
+
+        output_dir = tmp_path / "notes"
+        state_file = tmp_path / "state.json"
+
+        # Create a rate limiter with known rate (2 requests/second = 0.5s interval)
+        custom_rates = {
+            RateType.VIDEO: RateConfig(requests_per_second=2.0, max_concurrent=1),
+            RateType.THREAD: RateConfig(requests_per_second=2.0, max_concurrent=1),
+            RateType.LINK: RateConfig(requests_per_second=2.0, max_concurrent=1),
+            RateType.LLM: RateConfig(requests_per_second=2.0, max_concurrent=1),
+        }
+        rate_limiter = RateLimiter(rates=custom_rates)
+
+        pipeline = Pipeline(
+            output_dir=output_dir,
+            state_file=state_file,
+            rate_limiter=rate_limiter,
+            max_concurrency=1,  # Force sequential to verify timing
+        )
+
+        # Create export with 3 bookmarks (all tweets = LINK rate type)
+        export_data = [
+            {
+                "tweet_id": f"rate_{i:04d}",
+                "url": f"https://twitter.com/user/status/rate_{i:04d}",
+                "full_text": f"Rate test tweet {i}",
+                "screen_name": "user",
+            }
+            for i in range(3)
+        ]
+        export_path = tmp_path / "rate_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        start_time = time.monotonic()
+        result = await pipeline.process_export(export_path)
+        elapsed = time.monotonic() - start_time
+
+        assert result.processed == 3
+
+        # With 2 req/s and max_concurrent=1, 3 requests need ~1.0s minimum
+        # (first request immediate, then 2 waits of 0.5s each)
+        # Allow some tolerance for test execution
+        assert elapsed >= 0.9, f"Expected >= 0.9s, got {elapsed:.2f}s"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_handles_partial_failure(
+        self,
+        pipeline: Pipeline,
+        tmp_path: Path,
+        output_dir: Path,
+    ):
+        """One failure doesn't stop other bookmarks from processing."""
+        from unittest.mock import patch
+
+        # Create export with 3 bookmarks
+        export_data = [
+            {
+                "tweet_id": "fail_001",
+                "url": "https://twitter.com/user/status/fail_001",
+                "full_text": "Good tweet 1",
+                "screen_name": "user",
+            },
+            {
+                "tweet_id": "fail_002",
+                "url": "https://twitter.com/user/status/fail_002",
+                "full_text": "Tweet that will fail",
+                "screen_name": "user",
+            },
+            {
+                "tweet_id": "fail_003",
+                "url": "https://twitter.com/user/status/fail_003",
+                "full_text": "Good tweet 3",
+                "screen_name": "user",
+            },
+        ]
+        export_path = tmp_path / "partial_export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        # Make the TweetProcessor fail for bookmark fail_002
+        original_process = pipeline._processors[ContentType.TWEET].process
+
+        async def mock_process(bookmark):
+            if bookmark.id == "fail_002":
+                raise RuntimeError("Simulated failure")
+            return await original_process(bookmark)
+
+        with patch.object(
+            pipeline._processors[ContentType.TWEET],
+            "process",
+            side_effect=mock_process,
+        ):
+            result = await pipeline.process_export(export_path)
+
+        # 2 succeeded, 1 failed
+        assert result.processed == 2
+        assert result.failed == 1
+        assert len(result.errors) == 1
+        assert "fail_002" in result.errors[0]
+
+        # Verify 2 notes were created
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 2
+
+
 class TestPipelineLinkE2E:
     """End-to-end tests for link processing through the pipeline."""
 

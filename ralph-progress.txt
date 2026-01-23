@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 28
-- Commits feitos: 29
+- Issues processadas: 30
+- Commits feitos: 31
 
 ## Histórico de Iterações
 
@@ -228,3 +228,17 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: e4df1b6
 - Status: completo
 - Nota: Sprint 5 iniciado
+
+## Iteração 31 - 2026-01-23
+- Issue: #35 [5.2] Rate Limiter - Async Context Manager
+- Ação: Adicionei acquire_context() e acquire_context_for_content() usando @asynccontextmanager. Garante release mesmo em exceção via finally. 7 novos testes para wait, release on exit, release on exception, timestamp tracking.
+- Arquivos: src/core/rate_limiter.py, tests/test_rate_limiter.py
+- Commit: 771c9dd
+- Status: completo
+
+## Iteração 32 - 2026-01-23
+- Issue: #36 [5.3] Retry Logic
+- Ação: Implementei retry_async() com exponential backoff (base_delay * 2^attempt), jitter para evitar thundering herd, max_delay cap. Adicionei decorator @with_retry. Respeita ProcessorError.retryable - ContentDeletedError não é retentado. 21 testes.
+- Arquivos: src/core/retry.py, tests/test_retry.py
+- Commit: 49df01a
+- Status: completo
