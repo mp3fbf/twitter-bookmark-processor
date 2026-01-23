@@ -117,9 +117,10 @@ def _parse_single_bookmark(item: dict) -> Bookmark:
     if conversation_id is not None:
         conversation_id = str(conversation_id)
 
-    # in_reply_to_user_id is not directly in Twillot export,
-    # but we can infer from is_reply
-    in_reply_to_user_id = None
+    # in_reply_to_user_id - extract if present in export
+    in_reply_to_user_id = item.get("in_reply_to_user_id")
+    if in_reply_to_user_id is not None:
+        in_reply_to_user_id = str(in_reply_to_user_id)
 
     return Bookmark(
         id=tweet_id,

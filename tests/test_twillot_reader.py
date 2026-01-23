@@ -287,6 +287,143 @@ class TestBookmarkFieldMapping:
         return item
 
 
+class TestThreadDetectionFields:
+    """Test extraction of thread detection fields.
+
+    These fields are used by the classifier to detect threads:
+    - conversation_id: Groups tweets in the same conversation
+    - in_reply_to_user_id: ID of user being replied to
+    - author_id: ID of the tweet author
+    """
+
+    def test_parse_conversation_id(self):
+        """Extract conversation_id if present in export."""
+        item = {
+            "tweet_id": "123456789",
+            "url": "https://x.com/user/status/123456789",
+            "full_text": "Test tweet",
+            "screen_name": "testuser",
+            "conversation_id": "987654321",
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.conversation_id == "987654321"
+
+    def test_parse_conversation_id_converts_to_string(self):
+        """conversation_id should be converted to string if numeric."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "conversation_id": 987654321,  # numeric
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.conversation_id == "987654321"
+        assert isinstance(bookmark.conversation_id, str)
+
+    def test_parse_conversation_id_missing(self):
+        """conversation_id should be None if not in export."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.conversation_id is None
+
+    def test_parse_in_reply_to_user_id(self):
+        """Extract in_reply_to_user_id if present in export."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "in_reply_to_user_id": "555555",
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.in_reply_to_user_id == "555555"
+
+    def test_parse_in_reply_to_user_id_converts_to_string(self):
+        """in_reply_to_user_id should be converted to string if numeric."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "in_reply_to_user_id": 555555,  # numeric
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.in_reply_to_user_id == "555555"
+        assert isinstance(bookmark.in_reply_to_user_id, str)
+
+    def test_parse_in_reply_to_user_id_missing(self):
+        """in_reply_to_user_id should be None if not in export."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "is_reply": True,  # Reply flag but no user_id
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.in_reply_to_user_id is None
+
+    def test_parse_author_id(self):
+        """Extract author_id (user_id) from export."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "user_id": "999888777",
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.author_id == "999888777"
+
+    def test_parse_author_id_converts_to_string(self):
+        """author_id should be converted to string if numeric."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+            "user_id": 999888777,  # numeric
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.author_id == "999888777"
+        assert isinstance(bookmark.author_id, str)
+
+    def test_parse_author_id_missing(self):
+        """author_id should be None if user_id not in export."""
+        item = {
+            "tweet_id": "123",
+            "url": "https://x.com/u/status/123",
+            "full_text": "test",
+            "screen_name": "user",
+        }
+
+        bookmark = _parse_single_bookmark(item)
+
+        assert bookmark.author_id is None
+
+
 class TestMultipleBookmarks:
     """Test parsing multiple bookmarks."""
 
