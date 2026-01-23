@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 3
-- Commits feitos: 4
+- Issues processadas: 7
+- Commits feitos: 8
 
 ## Histórico de Iterações
 
@@ -28,4 +28,32 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Ação: Implementei StateManager com load/save JSON, is_processed(), mark_processed(), get_stats() + 18 testes
 - Arquivos: src/core/state_manager.py, tests/test_state_manager.py
 - Commit: eb257fd
+- Status: completo
+
+## Iteração 4 - 2026-01-23
+- Issue: #7 [1.5] Twillot Reader - Parse Export
+- Ação: Implementei parser para JSON export do Twillot com mapeamento de campos, extração de URLs e 24 testes
+- Arquivos: src/sources/twillot_reader.py, tests/test_twillot_reader.py
+- Commit: 71d83a7
+- Status: completo
+
+## Iteração 5 - 2026-01-23
+- Issue: #8 [1.6] Twillot Reader - Thread Detection Fields
+- Ação: Adicionei 9 testes para campos de detecção de thread (conversation_id, in_reply_to_user_id, author_id) e extração de in_reply_to_user_id
+- Arquivos: src/sources/twillot_reader.py, tests/test_twillot_reader.py
+- Commit: ec04782
+- Status: completo
+
+## Iteração 6 - 2026-01-23
+- Issue: #9 [1.7] Configuration Manager
+- Ação: Implementei Config dataclass com validação, load_config() para env vars, get_config() singleton + 20 testes
+- Arquivos: src/core/config.py, tests/test_config.py
+- Commit: c5bba43
+- Status: completo
+
+## Iteração 7 - 2026-01-23
+- Issue: #13 [2.3] Classifier - Link & Tweet Detection
+- Ação: Implementei detecção de LINK para URLs externas (github, medium, substack), ignorando Twitter/X e t.co. Adicionei 13 novos testes.
+- Arquivos: src/core/classifier.py, tests/test_classifier.py
+- Commit: a1d5c06
 - Status: completo
