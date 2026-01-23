@@ -162,9 +162,12 @@ class ObsidianWriter:
         Returns:
             Template filename
         """
+        from src.core.bookmark import ContentType
+
         # Map content type to template
-        # For now, all types use tweet.md.j2
-        # Future: thread.md.j2, video.md.j2, link.md.j2
+        if bookmark.content_type == ContentType.THREAD:
+            return "thread.md.j2"
+        # Future: video.md.j2, link.md.j2
         return "tweet.md.j2"
 
     def _render_template(
@@ -205,6 +208,10 @@ class ObsidianWriter:
             "tldr": tldr,
             "body": body,
         }
+
+        # Add metadata from processor (for structured templates like thread)
+        if result.metadata:
+            context.update(result.metadata)
 
         return template.render(**context)
 

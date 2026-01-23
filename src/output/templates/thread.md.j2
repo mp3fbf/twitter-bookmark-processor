@@ -1,0 +1,38 @@
+{% extends "base.md.j2" %}
+
+{% block content %}
+## Thread ({{ tweet_count }} tweets)
+
+{% if key_points %}
+### Key Points
+
+{% for point in key_points %}
+- {{ point }}
+{% endfor %}
+
+{% endif %}
+### Tweets
+
+{% for tweet in tweets %}
+#### {{ loop.index }}.
+{% if tweet.text %}
+> {{ tweet.text | replace("\n", "\n> ") }}
+{% endif %}
+
+{% if tweet.media_urls %}
+{% for media in tweet.media_urls %}
+![image]({{ media }})
+{% endfor %}
+{% endif %}
+
+{% if tweet.links %}
+{% for link in tweet.links %}
+- [{{ link }}]({{ link }})
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+---
+
+{{ body }}
+{% endblock %}

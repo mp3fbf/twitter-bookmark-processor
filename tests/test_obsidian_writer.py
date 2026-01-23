@@ -378,3 +378,205 @@ class TestTemplateStructure:
         # Should have footer with version
         assert "twitter-bookmark-processor v" in content
         assert "0.1.0" in content
+
+
+class TestThreadTemplate:
+    """Tests for thread-specific Jinja2 template."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        """Create a temporary output directory."""
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def writer(self, output_dir: Path) -> ObsidianWriter:
+        """Create a writer instance."""
+        return ObsidianWriter(output_dir)
+
+    @pytest.fixture
+    def thread_bookmark(self) -> Bookmark:
+        """Create a thread bookmark for testing."""
+        return Bookmark(
+            id="1002103360646823936",
+            url="https://x.com/naval/status/1002103360646823936",
+            text="How to Get Rich (without getting lucky)",
+            author_username="naval",
+            author_name="Naval",
+            content_type=ContentType.THREAD,
+            created_at="2018-05-31T15:00:00Z",
+        )
+
+    @pytest.fixture
+    def thread_result(self) -> ProcessResult:
+        """Create a thread process result with metadata."""
+        return ProcessResult(
+            success=True,
+            title="How to Get Rich without getting lucky",
+            content="Original formatted content here",
+            tags=["wealth", "money"],
+            metadata={
+                "tweets": [
+                    {
+                        "id": "1002103360646823936",
+                        "text": "How to Get Rich (without getting lucky):\n\nSeek wealth, not money or status.",
+                        "media_urls": [],
+                        "links": [],
+                    },
+                    {
+                        "id": "1002103361",
+                        "text": "Wealth is having assets that earn while you sleep.",
+                        "media_urls": ["https://pbs.twimg.com/media/example.jpg"],
+                        "links": [],
+                    },
+                    {
+                        "id": "1002103362",
+                        "text": "Money is how we transfer time and wealth.",
+                        "media_urls": [],
+                        "links": ["https://nav.al/wealth"],
+                    },
+                ],
+                "tweet_count": 3,
+                "author": "naval",
+                "source": "bird",
+                "key_points": [],
+            },
+        )
+
+    @pytest.fixture
+    def thread_result_with_key_points(self) -> ProcessResult:
+        """Create a thread process result with key points."""
+        return ProcessResult(
+            success=True,
+            title="How to Get Rich without getting lucky",
+            content="Original formatted content here",
+            tags=["wealth", "money"],
+            metadata={
+                "tweets": [
+                    {
+                        "id": "1",
+                        "text": "First tweet",
+                        "media_urls": [],
+                        "links": [],
+                    },
+                ],
+                "tweet_count": 1,
+                "author": "naval",
+                "source": "bird",
+                "key_points": [
+                    "Seek wealth, not money or status",
+                    "Build assets that earn while you sleep",
+                    "Specific knowledge cannot be taught",
+                ],
+            },
+        )
+
+    def test_thread_template_has_tweet_count(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should show 'Thread (N tweets)' header."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Should have thread header with count
+        assert "## Thread (3 tweets)" in content
+
+    def test_thread_template_numbers_tweets(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should number each tweet."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Should have numbered tweets
+        assert "#### 1." in content
+        assert "#### 2." in content
+        assert "#### 3." in content
+
+    def test_thread_template_has_key_points(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result_with_key_points: ProcessResult,
+    ):
+        """Thread template should have Key Points section when present."""
+        output_path = writer.write(thread_bookmark, thread_result_with_key_points)
+        content = output_path.read_text()
+
+        # Should have Key Points section
+        assert "### Key Points" in content
+        assert "Seek wealth, not money or status" in content
+        assert "Build assets that earn while you sleep" in content
+        assert "Specific knowledge cannot be taught" in content
+
+    def test_thread_template_omits_key_points_when_empty(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should omit Key Points section when empty."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Should NOT have Key Points section when list is empty
+        assert "### Key Points" not in content
+
+    def test_thread_template_includes_tweet_content(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should include tweet text as blockquotes."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Tweet content should be present
+        assert "Seek wealth, not money or status" in content
+        assert "assets that earn while you sleep" in content
+        assert "how we transfer time and wealth" in content
+
+    def test_thread_template_includes_media(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should include images from tweets."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Image should be embedded
+        assert "![image](https://pbs.twimg.com/media/example.jpg)" in content
+
+    def test_thread_template_includes_links(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread template should include external links from tweets."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Link should be present
+        assert "https://nav.al/wealth" in content
+
+    def test_thread_template_uses_thread_type_in_frontmatter(
+        self,
+        writer: ObsidianWriter,
+        thread_bookmark: Bookmark,
+        thread_result: ProcessResult,
+    ):
+        """Thread frontmatter should have type: thread."""
+        output_path = writer.write(thread_bookmark, thread_result)
+        content = output_path.read_text()
+
+        # Type should be thread
+        assert "type: thread" in content

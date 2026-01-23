@@ -28,6 +28,7 @@ class ProcessResult:
         error: Error message if success is False
         duration_ms: Processing time in milliseconds
         output_file: Path to generated file (if skill generates one)
+        metadata: Structured data for templates (e.g., tweets list, key_points)
     """
 
     success: bool
@@ -37,6 +38,7 @@ class ProcessResult:
     error: Optional[str] = None
     duration_ms: int = 0
     output_file: Optional[Path] = None
+    metadata: dict = field(default_factory=dict)
 
 
 class BaseProcessor(ABC):

@@ -190,11 +190,24 @@ class ThreadProcessor(BaseProcessor):
         # Build content from all tweets
         content = self._format_content(data, tweets)
 
+        # Extract key points if provided (LLM will populate this later)
+        key_points = data.get("key_points", [])
+
+        # Build metadata for template rendering
+        metadata = {
+            "tweets": tweets,
+            "tweet_count": len(tweets),
+            "author": author,
+            "source": data.get("source", ""),
+            "key_points": key_points,
+        }
+
         return ProcessResult(
             success=True,
             content=content,
             title=title,
             tags=tags,
+            metadata=metadata,
         )
 
     def _generate_title(self, tweets: list, author: str) -> str:
