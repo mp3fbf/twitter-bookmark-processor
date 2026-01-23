@@ -333,8 +333,111 @@ class TestClassifyThreadByHeuristics:
         assert result == ContentType.THREAD
 
 
+class TestClassifyLinkExternal:
+    """Test LINK classification via external URLs."""
+
+    def test_classify_link_external(self):
+        """External links (not twitter/youtube) → LINK."""
+        bookmark = _make_bookmark(
+            text="Great article https://example.com/article",
+            links=["https://example.com/article"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+    def test_classify_link_github(self):
+        """github.com → LINK."""
+        bookmark = _make_bookmark(
+            text="Check this repo https://github.com/user/repo",
+            links=["https://github.com/user/repo"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+    def test_classify_link_medium(self):
+        """medium.com → LINK."""
+        bookmark = _make_bookmark(
+            text="Read this https://medium.com/@user/article-title",
+            links=["https://medium.com/@user/article-title"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+    def test_classify_link_substack(self):
+        """substack.com → LINK."""
+        bookmark = _make_bookmark(
+            text="Newsletter https://newsletter.substack.com/p/post",
+            links=["https://newsletter.substack.com/p/post"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+    def test_classify_link_ignores_twitter(self):
+        """twitter.com links ignored for LINK classification → TWEET."""
+        bookmark = _make_bookmark(
+            text="Check this tweet https://twitter.com/user/status/123",
+            links=["https://twitter.com/user/status/123"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_link_ignores_x_com(self):
+        """x.com links ignored for LINK classification → TWEET."""
+        bookmark = _make_bookmark(
+            text="Check this https://x.com/user/status/123",
+            links=["https://x.com/user/status/123"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_link_ignores_t_co(self):
+        """t.co short links ignored for LINK classification → TWEET."""
+        bookmark = _make_bookmark(
+            text="Short link https://t.co/abc123",
+            links=["https://t.co/abc123"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.TWEET
+
+    def test_classify_link_multiple_external(self):
+        """Multiple external links → LINK (first match wins)."""
+        bookmark = _make_bookmark(
+            text="Check both https://example.com and https://test.org",
+            links=["https://example.com", "https://test.org"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+    def test_classify_link_mixed_with_twitter(self):
+        """Mixed twitter + external → LINK (external found)."""
+        bookmark = _make_bookmark(
+            text="See tweet and article",
+            links=["https://t.co/abc", "https://example.com/article"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK
+
+
 class TestClassifyPriority:
-    """Test classification priority (VIDEO > THREAD > TWEET)."""
+    """Test classification priority (VIDEO > THREAD > LINK > TWEET)."""
 
     def test_video_takes_priority_over_thread(self):
         """VIDEO wins even if thread signals present."""
@@ -358,3 +461,38 @@ class TestClassifyPriority:
         result = classify(bookmark)
 
         assert result == ContentType.THREAD
+
+    def test_video_takes_priority_over_link(self):
+        """VIDEO wins even if external links present."""
+        bookmark = _make_bookmark(
+            text="Video and article",
+            video_urls=["https://video.twimg.com/ext_tw_video/123/video.mp4"],
+            links=["https://example.com/article"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.VIDEO
+
+    def test_thread_takes_priority_over_link(self):
+        """THREAD wins over LINK."""
+        bookmark = _make_bookmark(
+            text="Thread with a link",
+            conversation_id="987654321",  # Thread signal
+            links=["https://example.com/article"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.THREAD
+
+    def test_link_takes_priority_over_tweet(self):
+        """LINK wins over default TWEET."""
+        bookmark = _make_bookmark(
+            text="Tweet with external link",
+            links=["https://example.com/article"],
+        )
+
+        result = classify(bookmark)
+
+        assert result == ContentType.LINK

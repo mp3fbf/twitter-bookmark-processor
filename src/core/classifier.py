@@ -33,6 +33,12 @@ THREAD_NUMBER_PATTERN = re.compile(r"^\d+[/.]")  # Starts with "1/" or "1."
 THREAD_EMOJI = "🧵"
 THREAD_WORD_PATTERN = re.compile(r"\(thread\)", re.IGNORECASE)
 
+# Twitter/X URL patterns (to be ignored for LINK classification)
+TWITTER_PATTERNS = [
+    re.compile(r"https?://(www\.)?(twitter\.com|x\.com)/"),
+    re.compile(r"https?://t\.co/"),
+]
+
 
 def _is_youtube_link(url: str) -> bool:
     """Check if URL is a YouTube link."""
@@ -42,6 +48,28 @@ def _is_youtube_link(url: str) -> bool:
 def _is_unsupported_video_platform(url: str) -> bool:
     """Check if URL is from an unsupported video platform."""
     return any(pattern.match(url) for pattern in UNSUPPORTED_VIDEO_PLATFORMS)
+
+
+def _is_twitter_link(url: str) -> bool:
+    """Check if URL is a Twitter/X link (including t.co short links)."""
+    return any(pattern.match(url) for pattern in TWITTER_PATTERNS)
+
+
+def _is_external_link(url: str) -> bool:
+    """Check if URL is an external link (not Twitter, YouTube, or video platforms).
+
+    External links are classified as LINK type for LLM extraction.
+    """
+    # Ignore Twitter/X URLs and t.co short links
+    if _is_twitter_link(url):
+        return False
+    # Ignore YouTube (handled as VIDEO)
+    if _is_youtube_link(url):
+        return False
+    # Ignore unsupported video platforms (handled as VIDEO)
+    if _is_unsupported_video_platform(url):
+        return False
+    return True
 
 
 def _is_thread_by_conversation(bookmark: "Bookmark") -> bool:
@@ -99,16 +127,14 @@ def classify(bookmark: "Bookmark") -> ContentType:
     Classification priority:
     1. VIDEO - if video_urls is populated or links contain YouTube URLs
     2. THREAD - if conversation_id != id, or replying to self, or 2+ heuristics
-    3. TWEET - default fallback
+    3. LINK - if external links present (not Twitter/YouTube/t.co)
+    4. TWEET - default fallback
 
     Args:
         bookmark: The bookmark to classify
 
     Returns:
         ContentType indicating the classification result
-
-    Note:
-        Link detection will be added in subsequent issues.
     """
     # Check for native video (video_urls populated)
     if bookmark.video_urls:
@@ -137,6 +163,11 @@ def classify(bookmark: "Bookmark") -> ContentType:
 
     if _is_thread_by_heuristics(bookmark):
         return ContentType.THREAD
+
+    # Check for external links
+    for link in bookmark.links:
+        if _is_external_link(link):
+            return ContentType.LINK
 
     # Default to TWEET
     return ContentType.TWEET
