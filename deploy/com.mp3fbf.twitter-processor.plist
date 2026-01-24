@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Twitter Bookmark Processor - Daemon Mode (Polling)
+
+  This plist runs the processor in daemon mode, polling data/backlog/
+  every 2 minutes for new Twillot export files.
+
+  Installation:
+    1. Edit paths below (VENV_PATH, WORKING_DIR, ANTHROPIC_API_KEY)
+    2. Copy to ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist
+
+  Management:
+    launchctl list | grep twitter        # Check if running
+    launchctl stop com.mp3fbf.twitter-processor   # Stop daemon
+    launchctl start com.mp3fbf.twitter-processor  # Start daemon
+    launchctl unload ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist  # Remove
+
+  Logs:
+    tail -f /tmp/twitter-processor.log   # stdout
+    tail -f /tmp/twitter-processor.err   # stderr
+-->
+<plist version="1.0">
+<dict>
+    <!-- Unique service identifier -->
+    <key>Label</key>
+    <string>com.mp3fbf.twitter-processor</string>
+
+    <!-- Program to execute -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- TODO: Update path to your venv Python -->
+        <string>/workspace/.mcp-tools/twitter-processor/venv/bin/python</string>
+        <string>-m</string>
+        <string>src.main</string>
+        <!-- Daemon mode (no --once flag) polls every 2 minutes -->
+    </array>
+
+    <!-- Working directory (where src/ is located) -->
+    <key>WorkingDirectory</key>
+    <!-- TODO: Update to your project directory -->
+    <string>/workspace/twitter-bookmark-processor</string>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- TODO: Set your Anthropic API key -->
+        <key>ANTHROPIC_API_KEY</key>
+        <string>YOUR_API_KEY_HERE</string>
+
+        <!-- Output directory for Obsidian notes -->
+        <key>TWITTER_OUTPUT_DIR</key>
+        <string>/workspace/notes/twitter/</string>
+
+        <!-- Log level (DEBUG, INFO, WARNING, ERROR) -->
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+
+    <!-- Start when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep running (restart if it crashes) -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Only restart on unexpected exit (non-zero) -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restarts (wait 30s between restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Log output -->
+    <key>StandardOutPath</key>
+    <string>/tmp/twitter-processor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/twitter-processor.err</string>
+
+    <!-- Nice level (lower priority, be gentle on system) -->
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <!-- Process type (background = low priority) -->
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

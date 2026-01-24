@@ -105,3 +105,74 @@ echo ""
 echo "To run the processor:"
 echo "  python -m src.main --once"
 echo ""
+
+# Check if user wants to install launchd plist
+PLIST_SRC="$SCRIPT_DIR/deploy/com.mp3fbf.twitter-processor.plist"
+PLIST_DEST="$HOME/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist"
+
+if [[ -f "$PLIST_SRC" ]]; then
+    echo ""
+    echo_info "Optional: Install launchd daemon"
+    echo "This will run the processor in the background, polling for new bookmarks."
+    read -p "Install launchd plist? (y/N) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Create LaunchAgents directory if needed
+        mkdir -p "$HOME/Library/LaunchAgents"
+
+        # Stop existing service if running
+        if launchctl list | grep -q "com.mp3fbf.twitter-processor"; then
+            echo_info "Stopping existing service..."
+            launchctl stop com.mp3fbf.twitter-processor 2>/dev/null || true
+            launchctl unload "$PLIST_DEST" 2>/dev/null || true
+        fi
+
+        # Generate plist with correct paths
+        echo_info "Generating plist with your paths..."
+
+        # Get the API key from environment or prompt
+        if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+            echo_warn "ANTHROPIC_API_KEY not set in environment"
+            read -p "Enter your Anthropic API key (or press Enter to skip): " API_KEY
+        else
+            API_KEY="$ANTHROPIC_API_KEY"
+            echo_info "Using ANTHROPIC_API_KEY from environment"
+        fi
+
+        # Copy and customize the plist
+        sed -e "s|/workspace/.mcp-tools/twitter-processor/venv/bin/python|$VENV_DIR/bin/python|g" \
+            -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
+            -e "s|YOUR_API_KEY_HERE|${API_KEY:-YOUR_API_KEY_HERE}|g" \
+            "$PLIST_SRC" > "$PLIST_DEST"
+
+        echo_info "Plist installed to $PLIST_DEST"
+
+        # Load the service
+        echo_info "Loading launchd service..."
+        launchctl load "$PLIST_DEST"
+
+        # Verify it's running
+        sleep 1
+        if launchctl list | grep -q "com.mp3fbf.twitter-processor"; then
+            echo_info "Service is running!"
+            echo ""
+            echo "Management commands:"
+            echo "  launchctl stop com.mp3fbf.twitter-processor   # Stop"
+            echo "  launchctl start com.mp3fbf.twitter-processor  # Start"
+            echo "  launchctl unload $PLIST_DEST  # Remove"
+            echo ""
+            echo "View logs:"
+            echo "  tail -f /tmp/twitter-processor.log"
+            echo "  tail -f /tmp/twitter-processor.err"
+        else
+            echo_error "Service failed to start. Check logs at /tmp/twitter-processor.err"
+        fi
+    else
+        echo_info "Skipped launchd installation"
+        echo ""
+        echo "To install later, run:"
+        echo "  cp $PLIST_SRC $PLIST_DEST"
+        echo "  launchctl load $PLIST_DEST"
+    fi
+fi
