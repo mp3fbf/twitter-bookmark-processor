@@ -85,6 +85,13 @@ Após a pré-ordenação, avalie o **nível de risco**:
 
 ### Regras de Risco
 
+**0. Se issue tem LABEL `high-risk` no GitHub:**
+   - Este label indica que um humano marcou a issue como arriscada
+   - Em modo **AFK**: NÃO implemente. Pule para próxima issue.
+     - Documente: "Issue #X tem label high-risk - PULADA"
+   - Em modo **HITL**: Output `<decision-required>` e PARE.
+   - O label `high-risk` tem prioridade sobre sua avaliação de risco.
+
 1. **Se risco ALTO e modo AFK**:
    - NÃO implemente
    - Documente no /workspace/twitter-bookmark-processor/ralph-progress.txt: "Issue #X requer decisão humana - PULADA"
@@ -170,13 +177,14 @@ EOF
 ```
 
 ### 7. REPORTAR
-```bash
-# Comentar na issue
-gh issue comment [NUMBER] --repo mp3fbf/twitter-bookmark-processor --body "Implementado em [COMMIT]. [resumo]"
 
-# Se completamente resolvida
-gh issue close [NUMBER] --repo mp3fbf/twitter-bookmark-processor --comment "Resolvido por Ralph em [COMMIT]"
+Feche a issue com comentário:
+```bash
+gh issue close [NUMBER] --repo mp3fbf/twitter-bookmark-processor \
+  --comment "Resolvido por Ralph em [COMMIT]. [resumo]"
 ```
+
+**Nota**: Issues com label `high-risk` não chegam aqui (ver Regra 0).
 
 ### 8. ATUALIZAR PROGRESSO
 Append em /workspace/twitter-bookmark-processor/ralph-progress.txt:

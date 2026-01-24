@@ -9,7 +9,14 @@ from unittest.mock import patch
 import pytest
 
 from src.core.pipeline import PipelineResult
-from src.main import DEFAULT_POLL_INTERVAL, main, print_stats, run_daemon, run_once
+from src.main import (
+    DEFAULT_POLL_INTERVAL,
+    create_argument_parser,
+    main,
+    print_stats,
+    run_daemon,
+    run_once,
+)
 
 
 @pytest.fixture
@@ -417,3 +424,95 @@ class TestRunDaemon:
 
         # Job should have completed despite shutdown request
         assert job_completed
+
+
+class TestCLIArguments:
+    """Tests for CLI argument parsing."""
+
+    def test_cli_once_flag(self) -> None:
+        """--once flag is recognized and stored."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--once"])
+        assert args.once is True
+
+    def test_cli_once_flag_default(self) -> None:
+        """--once flag defaults to False."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        assert args.once is False
+
+    def test_cli_port_flag(self) -> None:
+        """--port flag accepts custom port."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--port", "8766"])
+        assert args.port == 8766
+
+    def test_cli_port_flag_custom(self) -> None:
+        """--port flag with custom value."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--port", "9000"])
+        assert args.port == 9000
+
+    def test_cli_port_default(self) -> None:
+        """--port flag defaults to 8766."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        assert args.port == 8766
+
+    def test_cli_verbose_flag(self) -> None:
+        """--verbose flag is recognized."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--verbose"])
+        assert args.verbose is True
+
+    def test_cli_verbose_flag_short(self) -> None:
+        """-v is alias for --verbose."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["-v"])
+        assert args.verbose is True
+
+    def test_cli_verbose_default(self) -> None:
+        """--verbose defaults to False."""
+        parser = create_argument_parser()
+        args = parser.parse_args([])
+        assert args.verbose is False
+
+    def test_cli_help(self, capsys) -> None:
+        """--help shows usage information."""
+        parser = create_argument_parser()
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["--help"])
+
+        assert exc_info.value.code == 0
+
+        captured = capsys.readouterr()
+        assert "twitter-bookmark-processor" in captured.out
+        assert "--once" in captured.out
+        assert "--port" in captured.out
+        assert "--verbose" in captured.out
+
+    def test_cli_combined_flags(self) -> None:
+        """Multiple flags can be combined."""
+        parser = create_argument_parser()
+        args = parser.parse_args(["--once", "--verbose", "--port", "9999"])
+        assert args.once is True
+        assert args.verbose is True
+        assert args.port == 9999
+
+    def test_verbose_flag_increases_log_level(self, tmp_path: Path) -> None:
+        """--verbose flag causes DEBUG log level to be used."""
+        mock_env = {
+            "ANTHROPIC_API_KEY": "test-key",
+            "TWITTER_OUTPUT_DIR": str(tmp_path / "notes"),
+            "TWITTER_STATE_FILE": str(tmp_path / "state.json"),
+        }
+        (tmp_path / "notes").mkdir()
+
+        with patch.dict(os.environ, mock_env, clear=False):
+            with patch("src.main.run_once") as mock_run:
+                mock_run.return_value = PipelineResult()
+                with patch("src.main.setup_logging") as mock_setup:
+                    main(["--once", "--verbose"])
+
+                    # setup_logging should have been called with DEBUG
+                    mock_setup.assert_called_once_with("DEBUG")

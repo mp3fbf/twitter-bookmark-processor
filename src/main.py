@@ -5,8 +5,10 @@ Processes Twitter/X bookmarks from Twillot exports into Obsidian notes.
 Usage:
     python -m src.main --once     # Process backlog once and exit
     python -m src.main            # Run as daemon (polling mode)
+    python -m src.main --verbose  # Enable debug logging
 """
 
+import argparse
 import asyncio
 import signal
 import sys
@@ -203,6 +205,41 @@ def print_stats(result: PipelineResult) -> None:
             print(f"  ... and {len(result.errors) - 10} more")
 
 
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure the argument parser.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
+    parser = argparse.ArgumentParser(
+        prog="twitter-bookmark-processor",
+        description="Process Twitter/X bookmarks from Twillot exports into Obsidian notes.",
+        epilog="By default, runs as a daemon polling for new exports every 2 minutes.",
+    )
+
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process backlog once and exit (instead of daemon mode)",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8766,
+        metavar="PORT",
+        help="Port for webhook server (default: 8766)",
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging",
+    )
+
+    return parser
+
+
 def main(args: list[str] | None = None) -> int:
     """Main entry point.
 
@@ -212,11 +249,8 @@ def main(args: list[str] | None = None) -> int:
     Returns:
         Exit code (0 for success, 1 for errors).
     """
-    if args is None:
-        args = sys.argv[1:]
-
-    # Simple arg parsing for now (will be extended in #50)
-    once_mode = "--once" in args
+    parser = create_argument_parser()
+    parsed_args = parser.parse_args(args)
 
     # Load config and setup logging
     try:
@@ -225,12 +259,14 @@ def main(args: list[str] | None = None) -> int:
         print(f"Configuration error: {e}", file=sys.stderr)
         return 1
 
-    setup_logging(config.log_level)
+    # Override log level if verbose flag is set
+    log_level = "DEBUG" if parsed_args.verbose else config.log_level
+    setup_logging(log_level)
 
     # Default backlog directory (relative to workspace)
     backlog_dir = Path("data/backlog")
 
-    if once_mode:
+    if parsed_args.once:
         logger.info("Running in once mode")
         result = asyncio.run(
             run_once(
