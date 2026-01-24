@@ -5,6 +5,7 @@ Designed to be called from iOS Shortcuts or other automation tools.
 
 Endpoints:
     GET /health - Health check endpoint, returns {"status": "ok"}
+    GET /metrics - Metrics endpoint with counters and uptime
     POST /process - Accepts JSON with URL to process, returns 202 Accepted
                    Requires Bearer token authentication when TWITTER_WEBHOOK_TOKEN is set.
                    Processing happens asynchronously in a background task.
@@ -16,7 +17,9 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +32,53 @@ from src.core.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class ServerMetrics:
+    """Server metrics for monitoring.
+
+    Tracks processing counts, errors, and uptime.
+    All counters are thread-safe for use with asyncio.
+    """
+
+    start_time: float = field(default_factory=time.time)
+    requests_total: int = 0
+    processed_total: int = 0
+    errors_total: int = 0
+
+    def increment_requests(self) -> None:
+        """Increment total requests counter."""
+        self.requests_total += 1
+
+    def increment_processed(self) -> None:
+        """Increment successfully processed counter."""
+        self.processed_total += 1
+
+    def increment_errors(self) -> None:
+        """Increment error counter."""
+        self.errors_total += 1
+
+    def get_uptime_seconds(self) -> float:
+        """Get server uptime in seconds."""
+        return time.time() - self.start_time
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert metrics to dictionary for JSON response."""
+        return {
+            "uptime_seconds": round(self.get_uptime_seconds(), 2),
+            "requests_total": self.requests_total,
+            "processed_total": self.processed_total,
+            "errors_total": self.errors_total,
+        }
+
+
 # AppKey for storing background tasks (typed dict access)
 BACKGROUND_TASKS_KEY = web.AppKey("background_tasks", dict[str, asyncio.Task])
 
 # AppKey for storing the pipeline instance
 PIPELINE_KEY = web.AppKey("pipeline", Pipeline)
+
+# AppKey for storing server metrics
+METRICS_KEY = web.AppKey("metrics", ServerMetrics)
 
 # Regex pattern for Twitter/X status URLs
 # Matches: twitter.com/user/status/123 or x.com/user/status/456
@@ -124,6 +169,20 @@ async def health_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def metrics_handler(request: web.Request) -> web.Response:
+    """Metrics endpoint for monitoring.
+
+    Returns:
+        JSON response with server metrics including:
+        - uptime_seconds: Server uptime in seconds
+        - requests_total: Total number of /process requests received
+        - processed_total: Number of successfully processed bookmarks
+        - errors_total: Number of processing errors
+    """
+    metrics = request.app[METRICS_KEY]
+    return web.json_response(metrics.to_dict())
+
+
 async def process_handler(request: web.Request) -> web.Response:
     """Process a bookmark URL.
 
@@ -177,6 +236,9 @@ async def process_handler(request: web.Request) -> web.Response:
 
     # Extract tweet ID for tracking
     tweet_id = extract_tweet_id(url)
+
+    # Increment requests counter
+    request.app[METRICS_KEY].increment_requests()
 
     # Generate a unique task ID for tracking
     task_id = str(uuid.uuid4())[:8]
@@ -264,7 +326,8 @@ async def _process_url_background(
         output_path = await pipeline.process_bookmark(bookmark)
 
         if output_path:
-            # Success - notify with content type
+            # Success - notify with content type and increment counter
+            app[METRICS_KEY].increment_processed()
             content_type = bookmark.content_type.value.upper()
             notify_success(tweet_id, content_type)
             logger.info(
@@ -278,7 +341,8 @@ async def _process_url_background(
             logger.info("Background task %s: bookmark %s was skipped", task_id, tweet_id)
 
     except Exception as e:
-        # Log error and send notification
+        # Log error, increment error counter, and send notification
+        app[METRICS_KEY].increment_errors()
         error_msg = str(e)
         logger.error("Background task %s failed: %s", task_id, error_msg)
         notify_error(tweet_id, error_msg)
@@ -318,6 +382,9 @@ def create_app(
     # Initialize background task tracking
     app[BACKGROUND_TASKS_KEY] = {}
 
+    # Initialize server metrics
+    app[METRICS_KEY] = ServerMetrics()
+
     # Initialize pipeline
     if pipeline is not None:
         app[PIPELINE_KEY] = pipeline
@@ -336,6 +403,7 @@ def create_app(
         app[PIPELINE_KEY] = Pipeline(output_dir=output_dir, state_file=state_file)
 
     app.router.add_get("/health", health_handler)
+    app.router.add_get("/metrics", metrics_handler)
     app.router.add_post("/process", process_handler)
     return app
 

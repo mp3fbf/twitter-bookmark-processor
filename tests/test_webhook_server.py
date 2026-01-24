@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from unittest.mock import AsyncMock, patch
 
 from aiohttp import web
@@ -9,6 +10,8 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from src.webhook_server import (
     BACKGROUND_TASKS_KEY,
+    METRICS_KEY,
+    ServerMetrics,
     _cleanup_task,
     _process_url_background,
     create_app,
@@ -42,6 +45,110 @@ class TestHealthEndpoint(AioHTTPTestCase):
         resp = await self.client.get("/health")
         data = await resp.json()
         assert data == {"status": "ok"}
+
+
+class TestMetricsEndpoint(AioHTTPTestCase):
+    """Test the /metrics endpoint."""
+
+    async def get_application(self) -> web.Application:
+        """Return the application for testing."""
+        return create_app()
+
+    async def test_metrics_endpoint_returns_200(self):
+        """GET /metrics should return 200 OK."""
+        resp = await self.client.get("/metrics")
+        assert resp.status == 200
+
+    async def test_metrics_endpoint_returns_json(self):
+        """GET /metrics should return valid JSON."""
+        resp = await self.client.get("/metrics")
+        data = await resp.json()
+        assert isinstance(data, dict)
+
+    async def test_metrics_endpoint_returns_uptime(self):
+        """GET /metrics should return uptime_seconds."""
+        resp = await self.client.get("/metrics")
+        data = await resp.json()
+        assert "uptime_seconds" in data
+        assert isinstance(data["uptime_seconds"], (int, float))
+        assert data["uptime_seconds"] >= 0
+
+    async def test_metrics_endpoint_returns_counters(self):
+        """GET /metrics should return all counters."""
+        resp = await self.client.get("/metrics")
+        data = await resp.json()
+        assert "requests_total" in data
+        assert "processed_total" in data
+        assert "errors_total" in data
+        # Initial values should be 0
+        assert data["requests_total"] == 0
+        assert data["processed_total"] == 0
+        assert data["errors_total"] == 0
+
+    async def test_metrics_increments_on_request(self):
+        """GET /metrics should show incremented request count after /process."""
+        # Make a process request
+        await self.client.post(
+            "/process",
+            json={"url": "https://twitter.com/user/status/123"},
+        )
+
+        # Check metrics
+        resp = await self.client.get("/metrics")
+        data = await resp.json()
+        assert data["requests_total"] == 1
+
+
+class TestServerMetrics:
+    """Test ServerMetrics dataclass."""
+
+    def test_server_metrics_defaults(self):
+        """ServerMetrics should have sensible defaults."""
+        metrics = ServerMetrics()
+        assert metrics.requests_total == 0
+        assert metrics.processed_total == 0
+        assert metrics.errors_total == 0
+        assert metrics.start_time > 0
+
+    def test_server_metrics_increment_requests(self):
+        """increment_requests should increment counter."""
+        metrics = ServerMetrics()
+        metrics.increment_requests()
+        assert metrics.requests_total == 1
+        metrics.increment_requests()
+        assert metrics.requests_total == 2
+
+    def test_server_metrics_increment_processed(self):
+        """increment_processed should increment counter."""
+        metrics = ServerMetrics()
+        metrics.increment_processed()
+        assert metrics.processed_total == 1
+
+    def test_server_metrics_increment_errors(self):
+        """increment_errors should increment counter."""
+        metrics = ServerMetrics()
+        metrics.increment_errors()
+        assert metrics.errors_total == 1
+
+    def test_server_metrics_uptime(self):
+        """get_uptime_seconds should return elapsed time."""
+        start = time.time()
+        metrics = ServerMetrics(start_time=start)
+        time.sleep(0.1)
+        uptime = metrics.get_uptime_seconds()
+        assert uptime >= 0.1
+        assert uptime < 1.0
+
+    def test_server_metrics_to_dict(self):
+        """to_dict should return all metrics as dictionary."""
+        metrics = ServerMetrics()
+        metrics.increment_requests()
+        metrics.increment_processed()
+        result = metrics.to_dict()
+        assert result["requests_total"] == 1
+        assert result["processed_total"] == 1
+        assert result["errors_total"] == 0
+        assert "uptime_seconds" in result
 
 
 class TestProcessEndpoint(AioHTTPTestCase):
@@ -133,6 +240,18 @@ class TestServerConfiguration:
         app = create_app()
         routes = [r.resource.canonical for r in app.router.routes()]
         assert "/process" in routes
+
+    def test_create_app_has_metrics_route(self):
+        """Application should have /metrics route registered."""
+        app = create_app()
+        routes = [r.resource.canonical for r in app.router.routes()]
+        assert "/metrics" in routes
+
+    def test_create_app_initializes_metrics(self):
+        """Application should initialize ServerMetrics."""
+        app = create_app()
+        assert METRICS_KEY in app
+        assert isinstance(app[METRICS_KEY], ServerMetrics)
 
 
 class TestAuthHelpers:

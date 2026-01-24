@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 42
-- Commits feitos: 43
+- Issues processadas: 44
+- Commits feitos: 45
 
 ## Histórico de Iterações
 
@@ -346,3 +346,20 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: f9427d5
 - Status: completo
 - Nota: Sprint 7 em andamento - próxima issue #50 [7.4] CLI Arguments
+
+## Iteração 46 - 2026-01-24
+- Issue: #50 [7.4] CLI Arguments
+- Ação: Migrei de string matching para argparse com --once, --port PORT, -v/--verbose. Verbose habilita DEBUG logging. 12 novos testes para parsing de argumentos.
+- Arquivos: src/main.py, tests/test_main.py
+- Commit: 23775df
+- Status: completo
+- Nota: Sprint 7 em andamento - próxima issue #51 [7.5] Daily Summary
+
+## Iteração 47 - 2026-01-24
+- Issue: #51 [7.5] Daily Summary
+- Ação: Implementei ProcessingSummary dataclass com counts_by_type, errors, average_duration. Adicionei create_summary(), format_summary(), send_daily_summary() + 17 testes
+- Arquivos: src/core/summary.py, tests/test_summary.py
+- Commit: 93c18ec
+- Status: completo
+- Nota: Sprint 7 COMPLETO - próximas issues são Sprint 8
+
