@@ -14,9 +14,16 @@
 set -e
 
 # Configuration
-VENV_DIR="/workspace/.mcp-tools/twitter-processor/venv"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
+
+# Detect environment: container uses /workspace, host uses ~/projects
+if [[ -d "/workspace/.mcp-tools" ]]; then
+    VENV_DIR="/workspace/.mcp-tools/twitter-processor/venv"
+else
+    # Running on Mac host - use .venv in project dir
+    VENV_DIR="$SCRIPT_DIR/.venv"
+fi
 
 # Colors for output
 RED='\033[0;31m'
