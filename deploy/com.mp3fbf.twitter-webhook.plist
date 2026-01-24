@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Twitter Bookmark Processor - Webhook Server Mode
+
+  This plist runs the processor as an HTTP server on port 8766,
+  accepting POST requests from iOS Shortcuts or other automation tools.
+
+  Endpoints:
+    GET  http://localhost:8766/health  - Health check
+    GET  http://localhost:8766/metrics - Server metrics
+    POST http://localhost:8766/process - Submit URL for processing
+
+  Installation:
+    1. Edit paths below (VENV_PATH, WORKING_DIR, ANTHROPIC_API_KEY)
+    2. Copy to ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-webhook.plist
+
+  Management:
+    launchctl list | grep twitter-webhook        # Check if running
+    launchctl stop com.mp3fbf.twitter-webhook    # Stop server
+    launchctl start com.mp3fbf.twitter-webhook   # Start server
+    launchctl unload ~/Library/LaunchAgents/com.mp3fbf.twitter-webhook.plist  # Remove
+
+  Logs:
+    tail -f /tmp/twitter-webhook.log   # stdout
+    tail -f /tmp/twitter-webhook.err   # stderr
+
+  Test:
+    curl http://localhost:8766/health
+-->
+<plist version="1.0">
+<dict>
+    <!-- Unique service identifier -->
+    <key>Label</key>
+    <string>com.mp3fbf.twitter-webhook</string>
+
+    <!-- Program to execute -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- TODO: Update path to your venv Python -->
+        <string>/workspace/.mcp-tools/twitter-processor/venv/bin/python</string>
+        <string>-m</string>
+        <string>src.main</string>
+        <!-- Webhook server mode on port 8766 -->
+        <string>--port</string>
+        <string>8766</string>
+    </array>
+
+    <!-- Working directory (where src/ is located) -->
+    <key>WorkingDirectory</key>
+    <!-- TODO: Update to your project directory -->
+    <string>/workspace/twitter-bookmark-processor</string>
+
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- TODO: Set your Anthropic API key -->
+        <key>ANTHROPIC_API_KEY</key>
+        <string>YOUR_API_KEY_HERE</string>
+
+        <!-- Optional: Bearer token for webhook authentication -->
+        <!-- If not set, authentication is disabled (dev mode) -->
+        <key>TWITTER_WEBHOOK_TOKEN</key>
+        <string></string>
+
+        <!-- Output directory for Obsidian notes -->
+        <key>TWITTER_OUTPUT_DIR</key>
+        <string>/workspace/notes/twitter/</string>
+
+        <!-- Log level (DEBUG, INFO, WARNING, ERROR) -->
+        <key>LOG_LEVEL</key>
+        <string>INFO</string>
+    </dict>
+
+    <!-- Start when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Keep running (restart if it crashes) -->
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Only restart on unexpected exit (non-zero) -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Throttle restarts (wait 30s between restarts) -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- Log output -->
+    <key>StandardOutPath</key>
+    <string>/tmp/twitter-webhook.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/twitter-webhook.err</string>
+
+    <!-- Nice level (lower priority, be gentle on system) -->
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <!-- Process type (background = low priority) -->
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

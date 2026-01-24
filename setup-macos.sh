@@ -169,10 +169,95 @@ if [[ -f "$PLIST_SRC" ]]; then
             echo_error "Service failed to start. Check logs at /tmp/twitter-processor.err"
         fi
     else
-        echo_info "Skipped launchd installation"
-        echo ""
-        echo "To install later, run:"
-        echo "  cp $PLIST_SRC $PLIST_DEST"
-        echo "  launchctl load $PLIST_DEST"
+        echo_info "Skipped daemon installation"
     fi
 fi
+
+# Check if user wants to install webhook server plist
+WEBHOOK_PLIST_SRC="$SCRIPT_DIR/deploy/com.mp3fbf.twitter-webhook.plist"
+WEBHOOK_PLIST_DEST="$HOME/Library/LaunchAgents/com.mp3fbf.twitter-webhook.plist"
+
+if [[ -f "$WEBHOOK_PLIST_SRC" ]]; then
+    echo ""
+    echo_info "Optional: Install launchd webhook server"
+    echo "This will run an HTTP server on port 8766 for iOS Shortcuts integration."
+    echo "Endpoints: /health, /metrics, /process"
+    read -p "Install webhook server plist? (y/N) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Create LaunchAgents directory if needed
+        mkdir -p "$HOME/Library/LaunchAgents"
+
+        # Stop existing service if running
+        if launchctl list | grep -q "com.mp3fbf.twitter-webhook"; then
+            echo_info "Stopping existing webhook service..."
+            launchctl stop com.mp3fbf.twitter-webhook 2>/dev/null || true
+            launchctl unload "$WEBHOOK_PLIST_DEST" 2>/dev/null || true
+        fi
+
+        # Generate plist with correct paths
+        echo_info "Generating webhook plist with your paths..."
+
+        # Reuse API_KEY from daemon section if available, otherwise prompt
+        if [[ -z "$API_KEY" ]]; then
+            if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+                echo_warn "ANTHROPIC_API_KEY not set in environment"
+                read -p "Enter your Anthropic API key (or press Enter to skip): " API_KEY
+            else
+                API_KEY="$ANTHROPIC_API_KEY"
+                echo_info "Using ANTHROPIC_API_KEY from environment"
+            fi
+        else
+            echo_info "Using API key from daemon setup"
+        fi
+
+        # Ask for optional webhook token
+        echo ""
+        echo_info "Optional: Set webhook authentication token"
+        echo "If set, requests must include 'Authorization: Bearer <token>' header."
+        read -p "Enter webhook token (or press Enter for no auth): " WEBHOOK_TOKEN
+
+        # Copy and customize the plist
+        sed -e "s|/workspace/.mcp-tools/twitter-processor/venv/bin/python|$VENV_DIR/bin/python|g" \
+            -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
+            -e "s|YOUR_API_KEY_HERE|${API_KEY:-YOUR_API_KEY_HERE}|g" \
+            -e "s|<key>TWITTER_WEBHOOK_TOKEN</key>\n        <string></string>|<key>TWITTER_WEBHOOK_TOKEN</key>\n        <string>${WEBHOOK_TOKEN}</string>|g" \
+            "$WEBHOOK_PLIST_SRC" > "$WEBHOOK_PLIST_DEST"
+
+        echo_info "Webhook plist installed to $WEBHOOK_PLIST_DEST"
+
+        # Load the service
+        echo_info "Loading webhook service..."
+        launchctl load "$WEBHOOK_PLIST_DEST"
+
+        # Verify it's running
+        sleep 1
+        if launchctl list | grep -q "com.mp3fbf.twitter-webhook"; then
+            echo_info "Webhook server is running!"
+            echo ""
+            echo "Test the server:"
+            echo "  curl http://localhost:8766/health"
+            echo ""
+            echo "Management commands:"
+            echo "  launchctl stop com.mp3fbf.twitter-webhook   # Stop"
+            echo "  launchctl start com.mp3fbf.twitter-webhook  # Start"
+            echo "  launchctl unload $WEBHOOK_PLIST_DEST  # Remove"
+            echo ""
+            echo "View logs:"
+            echo "  tail -f /tmp/twitter-webhook.log"
+            echo "  tail -f /tmp/twitter-webhook.err"
+        else
+            echo_error "Webhook server failed to start. Check logs at /tmp/twitter-webhook.err"
+        fi
+    else
+        echo_info "Skipped webhook installation"
+    fi
+fi
+
+echo ""
+echo_info "All done!"
+echo ""
+echo "Manual plist installation (if skipped above):"
+echo "  Daemon: cp $PLIST_SRC ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist"
+echo "  Webhook: cp $WEBHOOK_PLIST_SRC ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-webhook.plist"
