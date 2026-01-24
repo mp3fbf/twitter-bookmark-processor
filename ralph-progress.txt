@@ -4,8 +4,8 @@ Iniciado: 2026-01-22 20:00
 Repo: mp3fbf/twitter-bookmark-processor
 
 ## Resumo
-- Issues processadas: 44
-- Commits feitos: 45
+- Issues processadas: 47
+- Commits feitos: 48
 
 ## Histórico de Iterações
 
@@ -362,4 +362,28 @@ Repo: mp3fbf/twitter-bookmark-processor
 - Commit: 93c18ec
 - Status: completo
 - Nota: Sprint 7 COMPLETO - próximas issues são Sprint 8
+
+## Iteração 48 - 2026-01-24
+- Issue: #58 [8.7] Health Check & Monitoring
+- Ação: Implementei ServerMetrics dataclass com counters (requests_total, processed_total, errors_total, uptime_seconds). Adicionei GET /metrics endpoint. Contadores incrementados automaticamente em process_handler e _process_url_background + 15 novos testes
+- Arquivos: src/webhook_server.py, tests/test_webhook_server.py
+- Commit: ca40170
+- Status: completo
+- Nota: Sprint 8 iniciado
+
+## Iteração 49 - 2026-01-24
+- Issue: #55 [8.4] iOS Shortcut Documentation
+- Ação: Criei docs/ios-shortcut.md com guia completo para criar iOS Shortcut - passo a passo para configurar Share Sheet, Get Contents of URL com POST/JSON/Authorization header, exemplo de configuração, e seção de troubleshooting
+- Arquivos: docs/ios-shortcut.md
+- Commit: 194c29b
+- Status: completo
+- Nota: Sprint 8 em andamento - próxima issue #56 [8.5] Environment Variables Documentation
+
+## Iteração 50 - 2026-01-24
+- Issue: #56 [8.5] Environment Variables Documentation
+- Ação: Criei docs/configuration.md com referência completa de todas as env vars (ANTHROPIC_API_KEY, TWITTER_WEBHOOK_TOKEN, TWITTER_OUTPUT_DIR, rate limits, LOG_LEVEL, etc), defaults, validação, e exemplos de configuração dev/prod. Atualizei README.md com links para documentação.
+- Arquivos: docs/configuration.md, README.md
+- Commit: ef486c7
+- Status: completo
+- Nota: Sprint 8 em andamento - próxima issue #59 [8.8] Final Documentation (P4) ou issues P5
 
