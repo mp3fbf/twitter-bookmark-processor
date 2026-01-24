@@ -44,6 +44,8 @@ python src/main.py         # Polling daemon
 ## Documentation
 
 - **[SPEC.md](SPEC.md)** - Complete technical specification (v2.2)
+- **[docs/configuration.md](docs/configuration.md)** - Environment variables reference
+- **[docs/ios-shortcut.md](docs/ios-shortcut.md)** - iOS Share Sheet setup guide
 - **[references/](references/)** - Battle-tested code patterns from existing skills
 
 ## Content Classification
