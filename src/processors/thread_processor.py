@@ -1,16 +1,17 @@
 """Thread processor for Twitter threads.
 
 Processes bookmarks classified as THREAD content type.
-Calls the /twitter skill via subprocess to extract thread content.
+Uses X API v2 search endpoint to fetch all tweets in a conversation,
+then formats them into a structured Obsidian note.
 """
 
-import asyncio
-import json
+import logging
 import re
-import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+
+import httpx
 
 from src.core.exceptions import ExtractionError, SkillError
 from src.core.llm_client import LLMClient, get_llm_client
@@ -18,41 +19,47 @@ from src.processors.base import BaseProcessor, ProcessResult
 
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
+    from src.sources.x_api_auth import XApiAuth
+
+logger = logging.getLogger(__name__)
+
+# X API v2 base URL
+BASE_URL = "https://api.twitter.com/2"
+
+# Fields to request when fetching thread tweets
+TWEET_FIELDS = "id,text,created_at,conversation_id,entities,attachments,author_id,note_tweet"
+EXPANSIONS = "attachments.media_keys,author_id"
+MEDIA_FIELDS = "media_key,type,url,preview_image_url"
+USER_FIELDS = "id,username,name"
 
 
 class ThreadProcessor(BaseProcessor):
     """Processor for thread content (Twitter threads).
 
-    Uses the /twitter skill to read threads via bird CLI or fallbacks.
-    The skill extracts all tweets in the thread with metadata.
+    Uses X API v2 to fetch all tweets in a conversation by the thread author.
+    Searches by conversation_id to reconstruct the full thread.
     """
-
-    # Path to the twitter skill script
-    SKILL_SCRIPT = Path.home() / ".claude/skills/twitter/scripts/twitter_reader.py"
-
-    # Default timeout for skill execution (30 seconds for threads)
-    DEFAULT_TIMEOUT = 30
 
     def __init__(
         self,
-        timeout: Optional[int] = None,
         output_dir: Optional[Path] = None,
         llm_client: Optional[LLMClient] = None,
+        x_api_auth: Optional["XApiAuth"] = None,
     ):
         """Initialize thread processor.
 
         Args:
-            timeout: Skill execution timeout in seconds (default: 30)
-            output_dir: Directory where output should be saved (not used by twitter skill)
+            output_dir: Directory where output should be saved
             llm_client: Optional LLMClient for key points extraction. If not provided,
                        will try to use global singleton (fails gracefully if unavailable).
+            x_api_auth: XApiAuth instance for X API access. Required for thread fetching.
         """
-        self.timeout = timeout or self.DEFAULT_TIMEOUT
         self.output_dir = output_dir
         self._llm_client = llm_client
+        self._x_api_auth = x_api_auth
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
-        """Process a thread bookmark by calling the twitter skill.
+        """Process a thread bookmark by fetching all tweets via X API.
 
         Args:
             bookmark: The thread bookmark to process
@@ -62,33 +69,24 @@ class ThreadProcessor(BaseProcessor):
         """
         start_time = time.perf_counter()
 
-        # Get thread URL from bookmark
-        thread_url = self._get_thread_url(bookmark)
-        if not thread_url:
+        if not self._x_api_auth:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             return ProcessResult(
                 success=False,
-                error="No Twitter/X URL found in bookmark",
+                error="X API auth not configured for thread processing",
                 duration_ms=duration_ms,
             )
 
         try:
-            # Call skill and get JSON output
-            data = await self._call_skill(thread_url)
+            # Fetch thread tweets via X API
+            data = await self._fetch_thread(bookmark)
 
-            # Parse output into ProcessResult
-            process_result = self._parse_skill_output(data)
+            # Parse output into ProcessResult (reuses same structure)
+            process_result = self._parse_thread_data(data)
             process_result.duration_ms = int((time.perf_counter() - start_time) * 1000)
 
             return process_result
 
-        except (asyncio.TimeoutError, subprocess.TimeoutExpired):
-            duration_ms = int((time.perf_counter() - start_time) * 1000)
-            return ProcessResult(
-                success=False,
-                error=f"Skill timeout after {self.timeout}s",
-                duration_ms=duration_ms,
-            )
         except SkillError as e:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             return ProcessResult(
@@ -104,85 +102,306 @@ class ThreadProcessor(BaseProcessor):
                 duration_ms=duration_ms,
             )
 
-    def _get_thread_url(self, bookmark: "Bookmark") -> Optional[str]:
-        """Extract Twitter/X URL from bookmark.
+    async def _fetch_thread(self, bookmark: "Bookmark") -> dict:
+        """Fetch all tweets in a thread via X API v2.
+
+        Strategy:
+        1. If we have conversation_id and author, search directly
+        2. If missing either, fetch the bookmarked tweet first to get them
+        3. Use search/recent endpoint with conversation_id filter
+        4. Fall back to single-tweet if search returns nothing (thread >7 days old)
 
         Args:
-            bookmark: The bookmark to extract URL from
+            bookmark: The thread bookmark
 
         Returns:
-            Twitter/X URL if found, None otherwise
-        """
-        # Use the bookmark's main URL (which should be the tweet URL)
-        if bookmark.url:
-            if "twitter.com" in bookmark.url or "x.com" in bookmark.url:
-                return bookmark.url
-
-        # Fall back to links
-        for url in bookmark.links:
-            if "twitter.com" in url or "x.com" in url:
-                return url
-
-        return None
-
-    async def _call_skill(self, url: str) -> dict:
-        """Call the twitter skill via subprocess.
-
-        Args:
-            url: Twitter/X URL to process as thread
-
-        Returns:
-            Parsed JSON output from skill
+            Dict with keys: tweets (list), author (str), source (str)
 
         Raises:
-            SkillError: If skill execution fails or thread is deleted
-            asyncio.TimeoutError: If skill times out
+            SkillError: If thread cannot be fetched
         """
-        cmd = [
-            "python3",
-            str(self.SKILL_SCRIPT),
-            url,
-            "--thread",
-            "--json",
-        ]
+        token = await self._x_api_auth.get_valid_token()
 
-        # Run subprocess in thread pool to not block event loop
-        loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout,
-                )
-            ),
-            timeout=self.timeout + 5,  # Extra buffer for executor overhead
-        )
+        conversation_id = bookmark.conversation_id
+        author = bookmark.author_username
 
-        # Parse JSON output regardless of return code (may have error details)
-        try:
-            data = json.loads(result.stdout) if result.stdout else {}
-        except json.JSONDecodeError:
-            data = {}
+        # If missing conversation_id or author, fetch the tweet first
+        if not conversation_id or not author:
+            tweet_data, fetched_author = await self._fetch_single_tweet(
+                token, bookmark.id
+            )
+            if not tweet_data:
+                raise SkillError(f"Could not fetch tweet {bookmark.id}")
 
-        # Check for skill failure (non-zero exit or success=False in output)
-        if result.returncode != 0:
-            error_msg = data.get("error") or result.stderr.strip() or "Unknown skill error"
-            raise SkillError(f"twitter skill failed: {error_msg}")
+            conversation_id = tweet_data.get("conversation_id", bookmark.id)
+            if not author:
+                author = fetched_author or "unknown"
 
-        if not data.get("success", True):
-            error_msg = data.get("error", "Thread not found or deleted")
-            raise SkillError(f"Thread error: {error_msg}")
+        # Search for all tweets in this conversation by the author
+        tweets = await self._search_conversation(token, conversation_id, author)
 
-        return data
+        if not tweets:
+            # Fallback: search returned nothing (thread older than 7 days
+            # or search endpoint unavailable). Use just the bookmarked tweet.
+            logger.warning(
+                "Search returned no results for conversation %s. "
+                "Falling back to single tweet.",
+                conversation_id,
+            )
+            tweets = await self._build_fallback_tweets(token, bookmark, author)
 
-    def _parse_skill_output(self, data: dict) -> ProcessResult:
-        """Parse skill JSON output into ProcessResult.
+        if not tweets:
+            raise SkillError(
+                f"Could not fetch any tweets for thread {bookmark.id}"
+            )
+
+        return {
+            "tweets": tweets,
+            "author": author,
+            "source": "X API v2",
+        }
+
+    async def _fetch_single_tweet(
+        self, token: str, tweet_id: str
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Fetch a single tweet by ID to get conversation_id and author.
 
         Args:
-            data: JSON data from skill
+            token: Valid access token
+            tweet_id: Tweet ID to fetch
+
+        Returns:
+            Tuple of (tweet_data dict, author_username) or (None, None) on error
+        """
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            response = await client.get(
+                f"{BASE_URL}/tweets/{tweet_id}",
+                params={
+                    "tweet.fields": TWEET_FIELDS,
+                    "expansions": EXPANSIONS,
+                    "media.fields": MEDIA_FIELDS,
+                    "user.fields": USER_FIELDS,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    "Failed to fetch tweet %s: %s %s",
+                    tweet_id,
+                    response.status_code,
+                    response.text,
+                )
+                return None, None
+
+            data = response.json()
+
+        tweet = data.get("data", {})
+        includes = data.get("includes", {})
+
+        # Get author username from includes
+        users = includes.get("users", [])
+        author_id = tweet.get("author_id", "")
+        author_username = None
+        for user in users:
+            if user.get("id") == author_id:
+                author_username = user.get("username")
+                break
+
+        return tweet, author_username
+
+    async def _search_conversation(
+        self, token: str, conversation_id: str, author_username: str
+    ) -> list[dict]:
+        """Search for all tweets in a conversation by the author.
+
+        Uses GET /2/tweets/search/recent with conversation_id filter.
+        Note: Only covers last 7 days of tweets.
+
+        Args:
+            token: Valid access token
+            conversation_id: The conversation ID (root tweet ID)
+            author_username: Author's username for from: filter
+
+        Returns:
+            List of tweet dicts sorted chronologically, empty if search fails
+        """
+        query = f"conversation_id:{conversation_id} from:{author_username}"
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                response = await client.get(
+                    f"{BASE_URL}/tweets/search/recent",
+                    params={
+                        "query": query,
+                        "max_results": "100",
+                        "tweet.fields": TWEET_FIELDS,
+                        "expansions": EXPANSIONS,
+                        "media.fields": MEDIA_FIELDS,
+                        "user.fields": USER_FIELDS,
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+                if response.status_code == 429:
+                    logger.warning("X API rate limited on search. Falling back.")
+                    return []
+
+                if response.status_code == 403:
+                    logger.warning(
+                        "X API search not available (403). "
+                        "May need higher API tier."
+                    )
+                    return []
+
+                if response.status_code != 200:
+                    logger.error(
+                        "X API search error %d: %s",
+                        response.status_code,
+                        response.text,
+                    )
+                    return []
+
+                data = response.json()
+
+        except httpx.HTTPError as e:
+            logger.error("HTTP error during thread search: %s", e)
+            return []
+
+        raw_tweets = data.get("data", [])
+        if not raw_tweets:
+            return []
+
+        includes = data.get("includes", {})
+        media_map = {m["media_key"]: m for m in includes.get("media", [])}
+
+        # Convert API tweets to the simple dict format used by formatting methods
+        tweets = []
+        for raw_tweet in raw_tweets:
+            tweet_dict = self._api_tweet_to_dict(
+                raw_tweet, author_username, media_map
+            )
+            tweets.append(tweet_dict)
+
+        # Sort chronologically by ID (lower ID = older tweet)
+        tweets.sort(key=lambda t: int(t.get("id", "0")))
+
+        return tweets
+
+    async def _build_fallback_tweets(
+        self, token: str, bookmark: "Bookmark", author: str
+    ) -> list[dict]:
+        """Build a minimal tweet list when search is unavailable.
+
+        Uses the bookmark's existing data, supplemented by a single API fetch
+        if the bookmark text is empty (webhook-created bookmarks).
+
+        Args:
+            token: Valid access token
+            bookmark: The original bookmark
+            author: Author username
+
+        Returns:
+            List with a single tweet dict, or empty if nothing available
+        """
+        text = bookmark.text
+        if not text:
+            # Webhook bookmark with no text - fetch the tweet
+            tweet_data, _ = await self._fetch_single_tweet(token, bookmark.id)
+            if tweet_data:
+                note_tweet = tweet_data.get("note_tweet")
+                text = (
+                    note_tweet.get("text", "")
+                    if note_tweet and note_tweet.get("text")
+                    else tweet_data.get("text", "")
+                )
+
+        if not text:
+            return []
+
+        return [
+            {
+                "id": bookmark.id,
+                "text": text,
+                "url": bookmark.url
+                or f"https://twitter.com/{author}/status/{bookmark.id}",
+                "media_urls": bookmark.media_urls,
+                "links": [
+                    link
+                    for link in bookmark.links
+                    if "twitter.com" not in link and "x.com" not in link
+                ],
+            }
+        ]
+
+    @staticmethod
+    def _api_tweet_to_dict(
+        raw_tweet: dict, author_username: str, media_map: dict
+    ) -> dict:
+        """Convert an X API tweet object to the simple dict format.
+
+        The dict format matches what the formatting methods expect:
+        {id, text, url, media_urls, links}
+
+        Args:
+            raw_tweet: Tweet data from API response
+            author_username: Author's username for URL construction
+            media_map: Media key → media data mapping
+
+        Returns:
+            Simplified tweet dict
+        """
+        tweet_id = raw_tweet["id"]
+
+        # Use note_tweet for long tweets
+        text = raw_tweet.get("text", "")
+        note_tweet = raw_tweet.get("note_tweet")
+        if note_tweet and note_tweet.get("text"):
+            text = note_tweet["text"]
+
+        # Media
+        media_urls = []
+        attachments = raw_tweet.get("attachments", {})
+        for key in attachments.get("media_keys", []):
+            media = media_map.get(key)
+            if not media:
+                continue
+            if media.get("type") == "photo" and media.get("url"):
+                media_urls.append(media["url"])
+            elif media.get("preview_image_url"):
+                media_urls.append(media["preview_image_url"])
+
+        # External links from entities
+        links = []
+        entities = raw_tweet.get("entities", {})
+        for url_entity in entities.get("urls", []):
+            expanded = url_entity.get("expanded_url", "")
+            if not expanded:
+                continue
+            if re.match(
+                r"https?://(twitter\.com|x\.com)/\w+/status/\d+/(photo|video)",
+                expanded,
+            ):
+                continue
+            if "pbs.twimg.com" in expanded or "video.twimg.com" in expanded:
+                continue
+            links.append(expanded)
+
+        url = f"https://twitter.com/{author_username}/status/{tweet_id}"
+
+        return {
+            "id": tweet_id,
+            "text": text,
+            "url": url,
+            "media_urls": media_urls,
+            "links": links,
+        }
+
+    def _parse_thread_data(self, data: dict) -> ProcessResult:
+        """Parse thread data into ProcessResult.
+
+        Args:
+            data: Dict with keys: tweets (list), author (str), source (str)
 
         Returns:
             ProcessResult with extracted content
@@ -190,19 +409,11 @@ class ThreadProcessor(BaseProcessor):
         tweets = data.get("tweets", [])
         author = data.get("author", "unknown")
 
-        # Generate title from first tweet (truncated)
         title = self._generate_title(tweets, author)
-
-        # Extract tags from thread content
         tags = self._extract_tags(tweets)
-
-        # Build content from all tweets
         content = self._format_content(data, tweets)
-
-        # Extract key points using LLM (if available)
         key_points = self._extract_key_points(tweets)
 
-        # Build metadata for template rendering
         metadata = {
             "tweets": tweets,
             "tweet_count": len(tweets),
@@ -270,7 +481,7 @@ class ThreadProcessor(BaseProcessor):
         """Format thread as markdown content.
 
         Args:
-            data: Full JSON data from skill
+            data: Full thread data dict
             tweets: List of tweet dicts
 
         Returns:

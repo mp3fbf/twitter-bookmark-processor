@@ -1,6 +1,6 @@
 [project]
 name = "twitter-bookmark-processor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Transform Twitter/X bookmarks into Obsidian notes"
 readme = "README.md"
 requires-python = ">=3.11"

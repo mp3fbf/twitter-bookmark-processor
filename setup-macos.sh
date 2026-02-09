@@ -128,6 +128,10 @@ if [[ -f "$PLIST_SRC" ]]; then
         # Create LaunchAgents directory if needed
         mkdir -p "$HOME/Library/LaunchAgents"
 
+        # Make wrapper scripts executable
+        chmod +x "$SCRIPT_DIR/deploy/run-processor.sh"
+        chmod +x "$SCRIPT_DIR/deploy/run-webhook.sh" 2>/dev/null || true
+
         # Stop existing service if running
         if launchctl list | grep -q "com.mp3fbf.twitter-processor"; then
             echo_info "Stopping existing service..."
@@ -137,20 +141,20 @@ if [[ -f "$PLIST_SRC" ]]; then
 
         # Generate plist with correct paths
         echo_info "Generating plist with your paths..."
+        echo_info "Note: API key will be fetched from 1Password at runtime"
 
-        # Get the API key from environment or prompt
+        # Legacy: Get the API key from environment or prompt (now handled by wrapper script)
         if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-            echo_warn "ANTHROPIC_API_KEY not set in environment"
-            read -p "Enter your Anthropic API key (or press Enter to skip): " API_KEY
+            echo_info "ANTHROPIC_API_KEY not set - wrapper script will fetch from 1Password"
+            API_KEY=""
         else
             API_KEY="$ANTHROPIC_API_KEY"
             echo_info "Using ANTHROPIC_API_KEY from environment"
         fi
 
-        # Copy and customize the plist
-        sed -e "s|/workspace/.mcp-tools/twitter-processor/venv/bin/python|$VENV_DIR/bin/python|g" \
-            -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
-            -e "s|YOUR_API_KEY_HERE|${API_KEY:-YOUR_API_KEY_HERE}|g" \
+        # Copy and customize the plist (substitutes project path)
+        # Note: API key is now fetched by wrapper script from 1Password
+        sed -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
             "$PLIST_SRC" > "$PLIST_DEST"
 
         echo_info "Plist installed to $PLIST_DEST"
@@ -205,31 +209,10 @@ if [[ -f "$WEBHOOK_PLIST_SRC" ]]; then
 
         # Generate plist with correct paths
         echo_info "Generating webhook plist with your paths..."
+        echo_info "Note: API key and webhook token will be fetched from 1Password at runtime"
 
-        # Reuse API_KEY from daemon section if available, otherwise prompt
-        if [[ -z "$API_KEY" ]]; then
-            if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-                echo_warn "ANTHROPIC_API_KEY not set in environment"
-                read -p "Enter your Anthropic API key (or press Enter to skip): " API_KEY
-            else
-                API_KEY="$ANTHROPIC_API_KEY"
-                echo_info "Using ANTHROPIC_API_KEY from environment"
-            fi
-        else
-            echo_info "Using API key from daemon setup"
-        fi
-
-        # Ask for optional webhook token
-        echo ""
-        echo_info "Optional: Set webhook authentication token"
-        echo "If set, requests must include 'Authorization: Bearer <token>' header."
-        read -p "Enter webhook token (or press Enter for no auth): " WEBHOOK_TOKEN
-
-        # Copy and customize the plist
-        sed -e "s|/workspace/.mcp-tools/twitter-processor/venv/bin/python|$VENV_DIR/bin/python|g" \
-            -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
-            -e "s|YOUR_API_KEY_HERE|${API_KEY:-YOUR_API_KEY_HERE}|g" \
-            -e "s|<key>TWITTER_WEBHOOK_TOKEN</key>\n        <string></string>|<key>TWITTER_WEBHOOK_TOKEN</key>\n        <string>${WEBHOOK_TOKEN}</string>|g" \
+        # Copy and customize the plist (substitutes project path)
+        sed -e "s|/workspace/twitter-bookmark-processor|$SCRIPT_DIR|g" \
             "$WEBHOOK_PLIST_SRC" > "$WEBHOOK_PLIST_DEST"
 
         echo_info "Webhook plist installed to $WEBHOOK_PLIST_DEST"

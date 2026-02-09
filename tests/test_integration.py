@@ -98,7 +98,15 @@ class TestFullPipelineAllTypes:
         mock_link_llm_response,
     ):
         """Process VIDEO, THREAD, LINK, TWEET in one export file."""
-        pipeline = Pipeline(output_dir=temp_output_dir, state_file=temp_state_file)
+        # Create mock X API auth for thread processing
+        mock_x_api_auth = AsyncMock()
+        mock_x_api_auth.get_valid_token = AsyncMock(return_value="fake-token")
+
+        pipeline = Pipeline(
+            output_dir=temp_output_dir,
+            state_file=temp_state_file,
+            x_api_auth=mock_x_api_auth,
+        )
 
         # Create export with all 4 content types
         # NOTE: Twillot reader extracts links from full_text, not from 'urls' field
@@ -141,19 +149,11 @@ class TestFullPipelineAllTypes:
         mock_video_result.stdout = json.dumps(mock_video_skill_output)
         mock_video_result.stderr = ""
 
-        # Mock subprocess for THREAD processor
-        mock_thread_result = MagicMock()
-        mock_thread_result.returncode = 0
-        mock_thread_result.stdout = json.dumps(mock_thread_skill_output)
-        mock_thread_result.stderr = ""
-
         def subprocess_side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
             if "youtube-video" in cmd_str or "yt" in cmd_str:
                 return mock_video_result
-            elif "twitter" in cmd_str:
-                return mock_thread_result
             return MagicMock(returncode=1, stdout="", stderr="Unknown command")
 
         # Mock HTTP response for LINK processor
@@ -176,6 +176,64 @@ class TestFullPipelineAllTypes:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
+        # Mock httpx for thread processor's X API calls
+        mock_search_response = MagicMock()
+        mock_search_response.status_code = 200
+        mock_search_response.json.return_value = {
+            "data": [
+                {
+                    "id": "9000001",
+                    "text": "1/ First tweet in thread",
+                    "conversation_id": "9000001",
+                    "author_id": "author1",
+                },
+                {
+                    "id": "9000002",
+                    "text": "2/ Second tweet continues",
+                    "conversation_id": "9000001",
+                    "author_id": "author1",
+                },
+                {
+                    "id": "9000003",
+                    "text": "3/ Final tweet concludes",
+                    "conversation_id": "9000001",
+                    "author_id": "author1",
+                },
+            ],
+            "includes": {
+                "users": [{"id": "author1", "username": "threadauthor"}],
+            },
+        }
+
+        # Mock single tweet lookup (needed when conversation_id missing)
+        mock_tweet_lookup_response = MagicMock()
+        mock_tweet_lookup_response.status_code = 200
+        mock_tweet_lookup_response.json.return_value = {
+            "data": {
+                "id": "int_thread_001",
+                "text": "1/ A thread",
+                "conversation_id": "9000001",
+                "author_id": "author1",
+            },
+            "includes": {
+                "users": [{"id": "author1", "username": "threadauthor"}],
+            },
+        }
+
+        # Build httpx mock that handles thread API calls
+        async def mock_httpx_get(url, **kwargs):
+            url_str = str(url)
+            if "tweets/search/recent" in url_str:
+                return mock_search_response
+            if "/tweets/" in url_str:
+                return mock_tweet_lookup_response
+            return mock_http_response
+
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.get = AsyncMock(side_effect=mock_httpx_get)
+        mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+        mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
+
         with (
             patch("subprocess.run", side_effect=subprocess_side_effect),
             patch(
@@ -185,6 +243,10 @@ class TestFullPipelineAllTypes:
             patch(
                 "src.processors.link_processor.get_llm_client",
                 return_value=mock_llm,
+            ),
+            patch(
+                "src.processors.thread_processor.httpx.AsyncClient",
+                return_value=mock_httpx_client,
             ),
         ):
             result = await pipeline.process_export(export_path)

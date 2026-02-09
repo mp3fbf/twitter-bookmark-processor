@@ -12,9 +12,12 @@ external services while maximizing throughput.
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
+
+import httpx
 
 from src.core.bookmark import ContentType, ProcessingStatus
 from src.core.classifier import classify
@@ -30,6 +33,7 @@ from src.sources.twillot_reader import parse_twillot_export
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
     from src.processors.base import ProcessResult
+    from src.sources.x_api_auth import XApiAuth
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,7 @@ class Pipeline:
         state_file: Path,
         rate_limiter: RateLimiter | None = None,
         max_concurrency: int = 10,
+        x_api_auth: Optional["XApiAuth"] = None,
     ):
         """Initialize pipeline with output and state paths.
 
@@ -84,6 +89,7 @@ class Pipeline:
             state_file: Path to JSON file for state persistence
             rate_limiter: Optional rate limiter instance (creates new if not provided)
             max_concurrency: Maximum concurrent bookmark processing tasks (default 10)
+            x_api_auth: Optional XApiAuth for thread processing via X API
         """
         self.output_dir = output_dir
         self.state_manager = StateManager(state_file)
@@ -96,30 +102,29 @@ class Pipeline:
         self._processors = {
             ContentType.TWEET: TweetProcessor(),
             ContentType.VIDEO: VideoProcessor(output_dir=output_dir),
-            ContentType.THREAD: ThreadProcessor(output_dir=output_dir),
+            ContentType.THREAD: ThreadProcessor(
+                output_dir=output_dir, x_api_auth=x_api_auth
+            ),
             ContentType.LINK: LinkProcessor(),
         }
 
-    async def process_export(
+    async def process_bookmarks(
         self,
-        export_path: Path,
+        bookmarks: list["Bookmark"],
     ) -> PipelineResult:
-        """Process a Twillot export file concurrently.
+        """Process a list of bookmarks concurrently.
 
-        Reads bookmarks from the export, classifies them, and processes
-        multiple bookmarks in parallel with rate limiting.
+        Classifies each bookmark, routes to appropriate processor, and writes
+        output. This is the core method used by both Twillot and X API sources.
 
         Args:
-            export_path: Path to Twillot JSON export file
+            bookmarks: List of Bookmark instances to process
 
         Returns:
             PipelineResult with processing statistics
         """
         result = PipelineResult()
-
-        # Parse export
-        bookmarks = parse_twillot_export(export_path)
-        logger.info("Parsed %d bookmarks from %s", len(bookmarks), export_path)
+        logger.info("Processing %d bookmarks", len(bookmarks))
 
         # Create tasks for all bookmarks
         tasks = [
@@ -163,6 +168,24 @@ class Pipeline:
 
         return result
 
+    async def process_export(
+        self,
+        export_path: Path,
+    ) -> PipelineResult:
+        """Process a Twillot export file concurrently.
+
+        Convenience wrapper around process_bookmarks() for Twillot exports.
+
+        Args:
+            export_path: Path to Twillot JSON export file
+
+        Returns:
+            PipelineResult with processing statistics
+        """
+        bookmarks = parse_twillot_export(export_path)
+        logger.info("Parsed %d bookmarks from %s", len(bookmarks), export_path)
+        return await self.process_bookmarks(bookmarks)
+
     async def _process_single_with_result(
         self,
         bookmark: "Bookmark",
@@ -185,6 +208,10 @@ class Pipeline:
             if self.state_manager.is_processed(bookmark.id):
                 logger.debug("Skipping already processed bookmark: %s", bookmark.id)
                 return None
+
+            # Resolve t.co links before classification so URL-only tweets
+            # get classified as LINK instead of TWEET
+            await self._resolve_tco_links(bookmark)
 
             # Classify content type
             bookmark.content_type = classify(bookmark)
@@ -221,6 +248,57 @@ class Pipeline:
                 error=str(e),
             )
             return None
+
+    @staticmethod
+    async def _resolve_tco_links(bookmark: "Bookmark") -> None:
+        """Resolve t.co URLs in tweet text and add them to bookmark.links.
+
+        Many tweets contain only a t.co shortened URL. Without resolving it,
+        the classifier sees no external links and falls through to TWEET,
+        producing a useless "Untitled Tweet" note. This method expands t.co
+        URLs so the classifier can properly route them as LINK or VIDEO.
+
+        Only runs when bookmark.links is empty and text contains t.co URLs.
+        Modifies bookmark.links in place.
+        """
+        if bookmark.links:
+            return
+
+        # Extract t.co URLs from text
+        tco_urls = re.findall(r"https?://t\.co/\w+", bookmark.text)
+        if not tco_urls:
+            return
+
+        for tco_url in tco_urls:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(10.0),
+                    follow_redirects=True,
+                ) as client:
+                    response = await client.head(tco_url)
+                    resolved = str(response.url)
+
+                    # Skip if it resolved to another Twitter/X URL
+                    if re.match(r"https?://(www\.)?(twitter\.com|x\.com)/", resolved):
+                        continue
+                    # Skip t.co that didn't resolve
+                    if "t.co/" in resolved:
+                        continue
+
+                    bookmark.links.append(resolved)
+                    logger.debug(
+                        "Resolved t.co link for %s: %s -> %s",
+                        bookmark.id,
+                        tco_url,
+                        resolved,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to resolve t.co URL %s for bookmark %s: %s",
+                    tco_url,
+                    bookmark.id,
+                    e,
+                )
 
     async def _process_single(
         self,

@@ -1,6 +1,6 @@
 # Twitter Bookmark Processor
 
-> **Versao:** 2.2 | **Ultima atualizacao:** 2026-01-20
+> **Versao:** 2.3 | **Ultima atualizacao:** 2026-02-08 | **Codigo:** 0.2.0
 
 ## Objetivo
 
@@ -8,8 +8,11 @@ Sistema automatico para processar bookmarks do Twitter/X, extrair conhecimento e
 
 ## Requisitos
 
-- **Deteccao hibrida:** Polling (2 min) + iOS Share Sheet (imediato)
+- **Data sources:** X API v2 (primary) + Twillot export (fallback)
+- **Deteccao hibrida:** X API polling (15 min) + Twillot polling (2 min) + iOS Share Sheet (imediato)
 - **Tipos de conteudo:** Videos | Threads | Links | Tweets simples
+- **Smart content types:** 12 fine-grained types (article, list, tutorial, tool, code, opinion, news, thread, video, screenshot, meme, unknown)
+- **Multi-LLM:** Anthropic (default) | OpenAI (vision/video) | Google Gemini (fast/video)
 - **Output:** `/workspace/notes/twitter/` (Obsidian-compatible)
 - **Backlog:** ~500-2000 bookmarks existentes
 - **Prioridade:** Qualidade > Custo
@@ -143,33 +146,65 @@ def _is_thread(bookmark: Bookmark) -> bool:
 ## Arquitetura
 
 ```
+X API v2 (primary) ───────┐
+                          ├──→ list[Bookmark] ──→ Classify ──→ Process ──→ Obsidian
+Twillot export (fallback) ┘         │                │            │
+                                    │          SmartPrompts    Multi-LLM
+                                    │          (12 types)     (vision/video)
+                                    │
+                              StateManager
+                             (dedup + state)
+```
+
+```
 /workspace/twitter-bookmark-processor/
 ├── src/
-│   ├── main.py                  # Polling daemon
-│   ├── webhook_server.py        # iOS Share Sheet endpoint (porta 8766)
+│   ├── main.py                  # Polling daemon (--source, --authorize, --once)
+│   ├── webhook_server.py        # iOS Share Sheet + OAuth callback (porta 8766)
 │   ├── core/
 │   │   ├── bookmark.py          # Data model (Bookmark, ContentType)
-│   │   ├── classifier.py        # Implementacao propria (inspirada em twitter_reader.py)
-│   │   └── state_manager.py     # JSON + file lock (fcntl)
+│   │   ├── classifier.py        # Routing classification (VIDEO/THREAD/LINK/TWEET)
+│   │   ├── config.py            # Centralized config from env vars
+│   │   ├── llm_client.py        # Anthropic LLM client (backward-compat shim)
+│   │   ├── llm_factory.py       # Multi-LLM factory (Anthropic/OpenAI/Gemini + vision)
+│   │   ├── smart_prompts.py     # 12 fine-grained content types + tailored prompts
+│   │   ├── content_fetcher.py   # Async URL fetcher with paywall bypass
+│   │   ├── pipeline.py          # Async processing pipeline (process_bookmarks)
+│   │   ├── state_manager.py     # JSON + file lock (fcntl)
+│   │   └── link_cache.py        # URL cache with TTL
 │   ├── sources/
-│   │   └── twillot_reader.py    # Parse Twillot JSON export
+│   │   ├── twillot_reader.py    # Parse Twillot JSON export
+│   │   ├── x_api_auth.py        # OAuth 2.0 PKCE for X API
+│   │   └── x_api_reader.py      # X API v2 bookmark reader
 │   ├── processors/
 │   │   ├── base.py              # BaseProcessor interface
 │   │   ├── video_processor.py   # Delega para /youtube-video skill
 │   │   ├── thread_processor.py  # Delega para /twitter skill
-│   │   ├── link_processor.py    # LLM knowledge extraction
-│   │   └── tweet_processor.py   # Tweet simples + categorizacao
+│   │   ├── link_processor.py    # LLM extraction + content fetcher + smart prompts
+│   │   └── tweet_processor.py   # Tweet processing + smart content type detection
 │   └── output/
 │       └── obsidian_writer.py   # Gera notas .md com frontmatter
 ├── data/
 │   ├── state.json               # Estado de processamento
 │   ├── link_cache.json          # Cache de URLs processadas
+│   ├── x_api_tokens.json        # OAuth tokens (gitignored)
 │   └── backlog/                 # Twillot exports
-├── tests/
+├── deploy/
+│   ├── com.mp3fbf.twitter-processor.plist  # launchd daemon config
+│   ├── run-processor.sh         # Wrapper (fetches keys from Keychain)
+│   └── com.mp3fbf.twitter-webhook.plist    # launchd webhook config
+├── tests/                       # 796+ tests
 │   ├── test_classifier.py
 │   ├── test_twillot_reader.py
 │   ├── test_state_manager.py
-│   └── test_obsidian_writer.py
+│   ├── test_obsidian_writer.py
+│   ├── test_llm_factory.py      # Multi-LLM provider tests
+│   ├── test_smart_prompts.py    # 12 content types detection
+│   ├── test_content_fetcher.py  # URL fetching + paywall bypass
+│   ├── test_x_api_auth.py       # OAuth 2.0 PKCE tests
+│   ├── test_x_api_reader.py     # X API reader + config integration
+│   ├── test_pipeline.py         # Pipeline + process_bookmarks
+│   └── ...
 └── setup-macos.sh               # Configura launchd services
 ```
 
@@ -437,26 +472,38 @@ def format_notification(bookmark: Bookmark, result: ProcessResult) -> str:
 
 ## Data Flow
 
-### Polling (Background)
+### Dual Source Polling (Background)
 ```
-Twillot export -> data/backlog/ -> twillot_reader.py
+X API v2 (every 15min) ──→ x_api_reader.py ──┐
+                                              ├──→ list[Bookmark]
+Twillot export (every 2min) ──→ twillot_reader.py ──┘
      |
      v
-classifier.py (implementação própria)
+classifier.py (routing: VIDEO/THREAD/LINK/TWEET)
      |
      +--[VIDEO]---> video_processor.py --> /youtube-video skill
      |
      +--[THREAD]--> thread_processor.py --> /twitter skill
      |
-     +--[LINK]----> link_processor.py --> LLM (Claude Haiku) + cache
+     +--[LINK]----> link_processor.py --> content_fetcher + smart_prompts --> Multi-LLM
      |
-     +--[TWEET]---> tweet_processor.py --> extracao basica
+     +--[TWEET]---> tweet_processor.py --> smart_prompts --> LLM
      |
      v
 obsidian_writer.py -> /workspace/notes/twitter/{type}/
      |
      v
 notify (Telegram) - formato enriquecido
+```
+
+### Smart Content Type Detection (second layer)
+```
+Within each processor, SmartPromptSelector detects fine-grained type:
+  ARTICLE_LINK | TOP_LIST | TUTORIAL_GUIDE | TOOL_ANNOUNCEMENT
+  CODE_SNIPPET | OPINION_TAKE | NEWS_UPDATE | THREAD_CONTENT
+  VIDEO_CONTENT | SCREENSHOT_INFO | MEME_HUMOR | UNKNOWN
+
+Tailored prompts are generated per type (zero LLM cost — regex-based detection).
 ```
 
 ### Share Sheet (Imediato)
@@ -469,6 +516,17 @@ webhook_server.py -> 202 Accepted + {id, status}
      |
      v
 (mesmo flow acima, em thread separada)
+```
+
+### X API OAuth Setup (one-time)
+```
+python3 -m src.main --authorize
+     |
+     v
+Opens browser -> X login -> Redirect to localhost:8766/oauth/callback
+     |
+     v
+Tokens saved to data/x_api_tokens.json (auto-refreshed)
 ```
 
 ---
@@ -548,47 +606,83 @@ logger.log("123", "process_error", error="timeout", retry=2)
 
 ## Implementacao (Sequencia)
 
-### Fase 1: Core
-1. Criar estrutura do projeto
-2. Setup venv em `/workspace/.mcp-tools/twitter-processor/`
-3. `bookmark.py` - Data model (Bookmark, ContentType, ProcessingStatus)
-4. `state_manager.py` - JSON + file lock + atomic write
-5. `twillot_reader.py` - Parse JSON export do Twillot
+### v0.1.0 — Core Pipeline (DONE)
 
-### Fase 2: Processors
-6. `classifier.py` - Implementação própria (inspirada em twitter_reader.py)
-7. `video_processor.py` - Integra com skill existente
-8. `thread_processor.py` - Integra com skill existente
-9. `link_processor.py` - LLM extraction + cache
-10. `tweet_processor.py` - Extracao basica
+#### Fase 1: Core
+1. ✅ Criar estrutura do projeto
+2. ✅ Setup venv em `/workspace/.mcp-tools/twitter-processor/`
+3. ✅ `bookmark.py` - Data model (Bookmark, ContentType, ProcessingStatus)
+4. ✅ `state_manager.py` - JSON + file lock + atomic write
+5. ✅ `twillot_reader.py` - Parse JSON export do Twillot
 
-### Fase 3: Output & Webhook
-11. `obsidian_writer.py` - Templates Jinja2 por tipo
-12. `webhook_server.py` - Com autenticacao Bearer token
-13. `main.py` - Polling daemon com rate limiting
+#### Fase 2: Processors
+6. ✅ `classifier.py` - Implementação própria (inspirada em twitter_reader.py)
+7. ✅ `video_processor.py` - Integra com skill existente
+8. ✅ `thread_processor.py` - Integra com skill existente
+9. ✅ `link_processor.py` - LLM extraction + cache
+10. ✅ `tweet_processor.py` - Extracao basica
 
-### Fase 4: Deploy
-14. `setup-macos.sh` - launchd plists
-15. iOS Shortcut "Process Tweet" (com header auth)
-16. Testar com backlog real
+#### Fase 3: Output & Webhook
+11. ✅ `obsidian_writer.py` - Templates Jinja2 por tipo
+12. ✅ `webhook_server.py` - Com autenticacao Bearer token
+13. ✅ `main.py` - Polling daemon com rate limiting
+
+#### Fase 4: Deploy
+14. ✅ `setup-macos.sh` - launchd plists
+15. ✅ iOS Shortcut "Process Tweet" (com header auth)
+16. ✅ Testar com backlog real
+
+### v0.2.0 — Multi-LLM + X API (DONE)
+
+#### Fase 1: Multi-LLM Provider Factory
+1. ✅ `llm_factory.py` - ABC LLMProvider + Anthropic/OpenAI/Gemini providers
+2. ✅ VisionCapable protocol for image analysis
+3. ✅ `llm_client.py` maintained as backward-compat shim
+4. ✅ Config: LLM_PROVIDER, LLM_MODEL, OPENAI_API_KEY, GEMINI_API_KEY
+
+#### Fase 2: Smart Prompts + Content Fetcher
+5. ✅ `smart_prompts.py` - 12 SmartContentTypes, regex-based detection, tailored prompts
+6. ✅ `content_fetcher.py` - Async URL fetching, paywall bypass, GitHub/YouTube handlers
+7. ✅ `link_processor.py` enhanced with content_fetcher + smart_prompts
+8. ✅ `tweet_processor.py` enhanced with smart content type detection
+
+#### Fase 3: X API Data Source
+9. ✅ `x_api_auth.py` - OAuth 2.0 PKCE (authorize, exchange, refresh, persist)
+10. ✅ `x_api_reader.py` - X API v2 bookmark reader with pagination + dedup
+11. ✅ `pipeline.py` - Extracted `process_bookmarks()` as core public method
+12. ✅ `main.py` - `--source x_api|twillot|both`, `--authorize`
+13. ✅ `webhook_server.py` - `/oauth/callback` route
+
+#### Fase 4: Cleanup + Deploy
+14. ✅ Version bump 0.1.0 → 0.2.0
+15. ✅ Deploy scripts updated (run-processor.sh, launchd plists)
+16. ✅ `twitter-bookmarks-app` archived
+17. ✅ SPEC.md updated
 
 ---
 
 ## Dependencias
 
 ```
-anthropic>=0.18.0
-httpx>=0.27.0
-beautifulsoup4>=4.12.0
-jinja2>=3.1.0
-python-dateutil>=2.8.0
+# Core
+anthropic>=0.18.0       # Default LLM provider
+httpx>=0.27.0           # Async HTTP (content fetcher, X API)
+beautifulsoup4>=4.12.0  # HTML parsing (content fetcher)
+jinja2>=3.1.0           # Obsidian templates
+python-dateutil>=2.8.0  # Date parsing
+
+# Multi-LLM (optional)
+openai>=1.0.0           # OpenAI provider (vision/video via GPT-5.2)
+google-genai            # Gemini provider (fast vision/video)
+
+# Already available: aiohttp (webhook server)
 ```
 
-**Nota:** Removido `requests` - usar apenas `httpx`.
+**Nota:** `requests` nao e usado — apenas `httpx` para HTTP async.
 
 ---
 
-## Testes
+## Testes (796+)
 
 | Modulo | Escopo |
 |--------|--------|
@@ -597,25 +691,56 @@ python-dateutil>=2.8.0
 | `test_state_manager.py` | Concorrencia e atomic writes |
 | `test_obsidian_writer.py` | Formato de output |
 | `test_link_processor.py` | Cache e fallback |
+| `test_llm_factory.py` | Multi-LLM factory, providers, vision protocol |
+| `test_smart_prompts.py` | 12 content type detection, prompt building |
+| `test_content_fetcher.py` | URL fetching, paywall bypass, GitHub/YouTube handlers |
+| `test_x_api_auth.py` | OAuth 2.0 PKCE, token refresh, persistence |
+| `test_x_api_reader.py` | API response → Bookmark, pagination, rate limits |
+| `test_pipeline.py` | Pipeline, process_bookmarks(), process_export() |
 
 ---
 
 ## Verificacao
 
-1. **Unit tests:** `python3 -m pytest tests/ -v`
-2. **Manual - Polling:**
+1. **Unit tests:** `python3 -m pytest tests/ -v` (796+ tests)
+2. **Manual - Twillot Polling:**
    - Drop um export Twillot em `data/backlog/`
-   - `python3 src/main.py --once`
+   - `python3 -m src.main --source twillot --once`
    - Verificar nota gerada em `/workspace/notes/twitter/`
-   - Verificar logs estruturados
-3. **Manual - Webhook:**
-   - `TWITTER_WEBHOOK_TOKEN=test python3 src/webhook_server.py`
+3. **Manual - X API:**
+   - `python3 -m src.main --authorize` (one-time OAuth setup)
+   - `python3 -m src.main --source x_api --once`
+   - Verificar bookmarks processados
+4. **Manual - Both sources:**
+   - `python3 -m src.main --source both --once`
+   - Verifica Twillot backlog + X API bookmarks
+5. **Manual - Webhook:**
+   - `TWITTER_WEBHOOK_TOKEN=test python3 -m src.webhook_server`
    - `curl -X POST http://localhost:8766/process -H "Authorization: Bearer test" -d '{"url":"https://x.com/naval/status/123"}'`
    - Verificar notificacao Telegram
-4. **Backlog:** Processar ~10 bookmarks variados (video, thread, link, tweet)
-5. **Concorrencia:** Processar 50 bookmarks simultaneos, verificar rate limiting
+6. **Daemon mode:** `python3 -m src.main --source both` (polls both sources continuously)
+7. **Concorrencia:** Processar 50 bookmarks simultaneos, verificar rate limiting
 
 ---
+
+## CLI
+
+```bash
+# Daemon mode (default: --source twillot)
+python3 -m src.main                           # Twillot polling
+python3 -m src.main --source x_api            # X API polling (15min)
+python3 -m src.main --source both             # Both sources
+
+# One-shot mode
+python3 -m src.main --once                    # Process once and exit
+python3 -m src.main --source x_api --once     # X API one-shot
+
+# OAuth setup (one-time)
+python3 -m src.main --authorize               # Opens browser for X login
+
+# Webhook server
+python3 -m src.webhook_server                 # Starts on port 8766
+```
 
 ## Arquivos Criticos de Referencia
 
@@ -623,3 +748,4 @@ python-dateutil>=2.8.0
 - `~/.claude/skills/youtube-video/scripts/youtube_processor.py` - Skill de video
 - `/workspace/_scripts/yt-webhook/server.py` - Padrao do webhook
 - `/workspace/_scripts/kb_processor.py` - Padrao de state management
+- `/workspace/twitter-bookmarks-app/` - **ARCHIVED** — prototipo com features portadas para este projeto

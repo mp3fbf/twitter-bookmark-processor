@@ -7,9 +7,13 @@
   every 2 minutes for new Twillot export files.
 
   Installation:
-    1. Edit paths below (VENV_PATH, WORKING_DIR, ANTHROPIC_API_KEY)
-    2. Copy to ~/Library/LaunchAgents/
+    1. Run ./setup-macos.sh to install (auto-configures paths)
+    2. Or manually: chmod +x deploy/run-processor.sh && cp deploy/*.plist ~/Library/LaunchAgents/
     3. launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist
+
+  API Key:
+    The wrapper script fetches ANTHROPIC_API_KEY from 1Password at runtime.
+    Requires: op CLI authenticated (service account or biometric)
 
   Management:
     launchctl list | grep twitter        # Check if running
@@ -27,14 +31,10 @@
     <key>Label</key>
     <string>com.mp3fbf.twitter-processor</string>
 
-    <!-- Program to execute -->
+    <!-- Program to execute (wrapper script fetches API key from 1Password) -->
     <key>ProgramArguments</key>
     <array>
-        <!-- TODO: Update path to your venv Python -->
-        <string>/workspace/.mcp-tools/twitter-processor/venv/bin/python</string>
-        <string>-m</string>
-        <string>src.main</string>
-        <!-- Daemon mode (no --once flag) polls every 2 minutes -->
+        <string>/workspace/twitter-bookmark-processor/deploy/run-processor.sh</string>
     </array>
 
     <!-- Working directory (where src/ is located) -->
@@ -43,19 +43,18 @@
     <string>/workspace/twitter-bookmark-processor</string>
 
     <!-- Environment variables -->
+    <!-- Note: Wrapper script loads OP token from ~/.secrets/op-token-yolo -->
+    <!-- Note: API keys are fetched from 1Password at runtime -->
     <key>EnvironmentVariables</key>
     <dict>
-        <!-- TODO: Set your Anthropic API key -->
-        <key>ANTHROPIC_API_KEY</key>
-        <string>YOUR_API_KEY_HERE</string>
-
-        <!-- Output directory for Obsidian notes -->
         <key>TWITTER_OUTPUT_DIR</key>
-        <string>/workspace/notes/twitter/</string>
+        <string>__PROJECT_DIR__/../notes/twitter/</string>
 
-        <!-- Log level (DEBUG, INFO, WARNING, ERROR) -->
         <key>LOG_LEVEL</key>
         <string>INFO</string>
+
+        <key>BOOKMARK_SOURCE</key>
+        <string>x_api</string>
     </dict>
 
     <!-- Start when loaded -->

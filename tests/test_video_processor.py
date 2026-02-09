@@ -291,11 +291,12 @@ class TestVideoProcessorHandlesSkillError:
 
     @pytest.mark.asyncio
     async def test_video_processor_handles_no_youtube_url(self, processor, bookmark_no_youtube):
-        """Bookmark without YouTube URL results in error."""
+        """Bookmark without YouTube URL falls back to Twitter video download."""
         result = await processor.process(bookmark_no_youtube)
 
+        # Now attempts yt-dlp download instead of immediately failing
         assert result.success is False
-        assert "no youtube url" in result.error.lower()
+        assert "video" in result.error.lower()
 
 
 class TestVideoProcessorDuration:

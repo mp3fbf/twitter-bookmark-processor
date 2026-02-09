@@ -6,12 +6,13 @@ Extracts title, content, and tags from the tweet text.
 
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from src.processors.base import BaseProcessor, ProcessResult
 
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
+    from src.core.smart_prompts import SmartPromptSelector
 
 
 class TweetProcessor(BaseProcessor):
@@ -22,10 +23,23 @@ class TweetProcessor(BaseProcessor):
     - Title from first N words of tweet
     - Hashtags as tags
     - Formats content with images if present
+
+    Optionally uses SmartPromptSelector for fine-grained content type
+    detection (e.g., OPINION_TAKE, CODE_SNIPPET) which enriches metadata.
     """
 
     # Max words to use for title
     TITLE_MAX_WORDS = 8
+
+    def __init__(self, smart_prompts: Optional["SmartPromptSelector"] = None):
+        """Initialize tweet processor.
+
+        Args:
+            smart_prompts: Optional SmartPromptSelector for fine-grained
+                          content type detection. When provided, detected
+                          smart type is added to result metadata.
+        """
+        self._smart_prompts = smart_prompts
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a simple tweet bookmark.
@@ -48,6 +62,15 @@ class TweetProcessor(BaseProcessor):
             # Format content
             content = self._format_content(bookmark)
 
+            # Detect smart content type if available
+            metadata = {}
+            if self._smart_prompts is not None:
+                smart_type = self._smart_prompts.detect_content_type(
+                    bookmark.text,
+                    has_image=bool(bookmark.media_urls),
+                )
+                metadata["smart_content_type"] = smart_type.value
+
             duration_ms = int((time.perf_counter() - start_time) * 1000)
 
             return ProcessResult(
@@ -56,6 +79,7 @@ class TweetProcessor(BaseProcessor):
                 title=title,
                 tags=tags,
                 duration_ms=duration_ms,
+                metadata=metadata,
             )
         except Exception as e:
             duration_ms = int((time.perf_counter() - start_time) * 1000)

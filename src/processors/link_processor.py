@@ -21,6 +21,8 @@ from src.processors.base import BaseProcessor, ProcessResult
 
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
+    from src.core.content_fetcher import AsyncContentFetcher
+    from src.core.smart_prompts import SmartPromptSelector
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -97,6 +99,8 @@ Example response:
         timeout: Optional[int] = None,
         llm_client: Optional[LLMClient] = None,
         cache: Optional[LinkCache] = None,
+        content_fetcher: Optional["AsyncContentFetcher"] = None,
+        smart_prompts: Optional["SmartPromptSelector"] = None,
     ):
         """Initialize link processor.
 
@@ -106,13 +110,24 @@ Example response:
                        will try to use global singleton (fails gracefully if unavailable).
             cache: Optional LinkCache for caching LLM extraction results.
                    If provided, will check cache before calling LLM.
+            content_fetcher: Optional AsyncContentFetcher for enhanced URL extraction
+                            (paywall bypass, GitHub/YouTube handlers). Falls back to
+                            basic httpx fetch when not provided.
+            smart_prompts: Optional SmartPromptSelector class for content-type-aware
+                          prompt generation. Falls back to generic EXTRACTION_PROMPT
+                          when not provided.
         """
         self.timeout = timeout or self.DEFAULT_TIMEOUT
         self._llm_client = llm_client
         self._cache = cache
+        self._content_fetcher = content_fetcher
+        self._smart_prompts = smart_prompts
 
     async def process(self, bookmark: "Bookmark") -> ProcessResult:
         """Process a link bookmark by fetching and extracting content.
+
+        Uses AsyncContentFetcher for enhanced extraction when available,
+        otherwise falls back to basic httpx fetch.
 
         Args:
             bookmark: The link bookmark to process
@@ -133,17 +148,28 @@ Example response:
             )
 
         try:
-            # Fetch HTML content
-            html = await self._fetch_url(link_url)
+            # Enhanced path: use AsyncContentFetcher for richer extraction
+            fetched_content = None
+            if self._content_fetcher is not None:
+                fetched_content = await self._content_fetcher.fetch_content(link_url)
 
-            # Extract text from HTML
-            text = self._extract_text(html)
-
-            # Extract title from HTML (fallback)
-            html_title = self._extract_title(html) or self._generate_title(text)
+            if fetched_content and fetched_content.main_content and not fetched_content.fetch_error:
+                text = fetched_content.main_content
+                html_title = fetched_content.title or self._generate_title(text)
+            else:
+                # Fallback: basic httpx fetch
+                html = await self._fetch_url(link_url)
+                text = self._extract_text(html)
+                html_title = self._extract_title(html) or self._generate_title(text)
 
             # Use LLM to extract structured content (checks cache first)
-            llm_data = self._extract_with_llm(text, url=link_url)
+            # When smart_prompts is available, use content-type-aware prompt
+            llm_data = self._extract_with_llm(
+                text,
+                url=link_url,
+                bookmark=bookmark,
+                fetched_content=fetched_content,
+            )
 
             # Use LLM title if available, otherwise fallback to HTML title
             title = llm_data.get("title") or html_title
@@ -152,6 +178,25 @@ Example response:
             tldr = llm_data.get("tldr", "")
             key_points = llm_data.get("key_points", [])
             tags = llm_data.get("tags", [])
+
+            # Build metadata
+            metadata = {
+                "source_url": link_url,
+                "raw_text": text,
+                "tldr": tldr,
+                "key_points": key_points,
+            }
+
+            # Add enriched metadata from content fetcher
+            if fetched_content:
+                if fetched_content.content_type != "unknown":
+                    metadata["fetched_content_type"] = fetched_content.content_type
+                if fetched_content.code_blocks:
+                    metadata["code_blocks"] = fetched_content.code_blocks
+                if fetched_content.lists_extracted:
+                    metadata["lists_extracted"] = fetched_content.lists_extracted
+                if fetched_content.paywall_detected:
+                    metadata["paywall_detected"] = True
 
             # Format content with LLM-enhanced data
             content = self._format_content(bookmark, link_url, text, tldr, key_points)
@@ -164,12 +209,7 @@ Example response:
                 title=title,
                 tags=tags,
                 duration_ms=duration_ms,
-                metadata={
-                    "source_url": link_url,
-                    "raw_text": text,
-                    "tldr": tldr,
-                    "key_points": key_points,
-                },
+                metadata=metadata,
             )
 
         except httpx.TimeoutException:
@@ -324,14 +364,24 @@ Example response:
             return title
         return "Untitled Link"
 
-    def _extract_with_llm(self, text: str, url: Optional[str] = None) -> dict[str, Any]:
+    def _extract_with_llm(
+        self,
+        text: str,
+        url: Optional[str] = None,
+        bookmark: Optional["Bookmark"] = None,
+        fetched_content: Any = None,
+    ) -> dict[str, Any]:
         """Extract structured content using LLM.
 
         Checks cache first if available. Caches successful extractions.
+        When smart_prompts is available, uses content-type-aware prompts
+        for better extraction quality.
 
         Args:
             text: Raw text content from web page
             url: URL being processed (used as cache key)
+            bookmark: Optional bookmark for smart prompt context
+            fetched_content: Optional FetchedContent for enriched extraction
 
         Returns:
             Dict with title, tldr, key_points, tags (empty values if LLM unavailable)
@@ -360,8 +410,19 @@ Example response:
         if len(text) > 4000:
             truncated_text += "\n\n[Content truncated...]"
 
+        # Choose prompt: smart prompts (content-type-aware) or generic
+        prompt = self.EXTRACTION_PROMPT
+        if self._smart_prompts is not None and bookmark is not None:
+            smart_prompt, _ = self._smart_prompts.build_prompt(
+                bookmark.text,
+                author=bookmark.author_username,
+                has_link=True,
+                link_content=truncated_text,
+            )
+            prompt = smart_prompt
+
         try:
-            result = llm_client.extract_structured(truncated_text, self.EXTRACTION_PROMPT)
+            result = llm_client.extract_structured(truncated_text, prompt)
             validated = self._validate_llm_response(result)
 
             # Cache the validated result if cache is available and URL is provided

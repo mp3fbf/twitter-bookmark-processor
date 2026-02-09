@@ -13,12 +13,14 @@ Endpoints:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
 import time
 import uuid
+from html import escape
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -157,7 +159,7 @@ def check_auth(request: web.Request) -> bool:
         return False
 
     provided_token = auth_header[7:]  # Remove "Bearer " prefix
-    return provided_token == token
+    return hmac.compare_digest(provided_token, token)
 
 
 async def health_handler(request: web.Request) -> web.Response:
@@ -361,6 +363,71 @@ def _cleanup_task(app: web.Application, task_id: str) -> None:
     logger.debug("Cleaned up task %s", task_id)
 
 
+async def oauth_callback_handler(request: web.Request) -> web.Response:
+    """Handle OAuth 2.0 callback from X API authorization.
+
+    Captures the authorization code from the redirect and exchanges it
+    for access + refresh tokens. This endpoint is used during the
+    --authorize flow as an alternative to manual code pasting.
+
+    Returns:
+        HTML response indicating success or failure.
+    """
+    code = request.query.get("code")
+    state = request.query.get("state")
+    error = request.query.get("error")
+
+    if error:
+        return web.Response(
+            text=f"<h1>Authorization Failed</h1><p>Error: {escape(error)}</p>",
+            content_type="text/html",
+        )
+
+    if not code:
+        return web.Response(
+            text="<h1>Missing Code</h1><p>No authorization code received.</p>",
+            content_type="text/html",
+            status=400,
+        )
+
+    # Try to exchange the code for tokens
+    try:
+        from src.core.config import get_config
+        from src.sources.x_api_auth import XApiAuth
+
+        config = get_config(require_api_key=False)
+        if not config.x_api_client_id:
+            return web.Response(
+                text="<h1>Error</h1><p>X_API_CLIENT_ID not configured.</p>",
+                content_type="text/html",
+                status=500,
+            )
+
+        auth = XApiAuth(
+            client_id=config.x_api_client_id,
+            token_file=config.x_api_token_file,
+        )
+        # Set the pending verifier from the authorization flow
+        # Note: This only works if the auth flow was started in the same process
+        tokens = await auth.exchange_code(code)
+
+        return web.Response(
+            text=(
+                "<h1>Authorization Successful!</h1>"
+                f"<p>Tokens saved. Access token expires at: {tokens.expires_at}</p>"
+                "<p>You can close this window.</p>"
+            ),
+            content_type="text/html",
+        )
+    except Exception as e:
+        logger.error("OAuth callback failed: %s", e)
+        return web.Response(
+            text=f"<h1>Authorization Failed</h1><p>Error: {escape(str(e))}</p>",
+            content_type="text/html",
+            status=500,
+        )
+
+
 def create_app(
     pipeline: Pipeline | None = None,
     output_dir: Path | None = None,
@@ -390,21 +457,37 @@ def create_app(
         app[PIPELINE_KEY] = pipeline
     else:
         # Use provided paths or load from config
-        if output_dir is None or state_file is None:
-            try:
-                config = get_config(require_api_key=False)
-                output_dir = output_dir or config.output_dir
-                state_file = state_file or config.state_file
-            except Exception:
-                # Fallback defaults for testing without config
-                output_dir = output_dir or Path("/workspace/notes/twitter/")
-                state_file = state_file or Path("data/state.json")
+        x_api_auth = None
+        try:
+            config = get_config(require_api_key=False)
+            output_dir = output_dir or config.output_dir
+            state_file = state_file or config.state_file
 
-        app[PIPELINE_KEY] = Pipeline(output_dir=output_dir, state_file=state_file)
+            # Set up X API auth for thread processing if configured
+            if config.x_api_client_id:
+                from src.sources.x_api_auth import XApiAuth
+
+                auth = XApiAuth(
+                    client_id=config.x_api_client_id,
+                    token_file=config.x_api_token_file,
+                )
+                if auth.has_tokens():
+                    x_api_auth = auth
+        except Exception:
+            # Fallback defaults for testing without config
+            output_dir = output_dir or Path("/workspace/notes/twitter/")
+            state_file = state_file or Path("data/state.json")
+
+        app[PIPELINE_KEY] = Pipeline(
+            output_dir=output_dir,
+            state_file=state_file,
+            x_api_auth=x_api_auth,
+        )
 
     app.router.add_get("/health", health_handler)
     app.router.add_get("/metrics", metrics_handler)
     app.router.add_post("/process", process_handler)
+    app.router.add_get("/oauth/callback", oauth_callback_handler)
     return app
 
 

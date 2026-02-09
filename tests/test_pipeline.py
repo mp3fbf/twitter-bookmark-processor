@@ -541,40 +541,17 @@ class TestPipelineThreadE2E:
         return tmp_path / "state.json"
 
     @pytest.fixture
-    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
-        """Create a pipeline instance."""
-        return Pipeline(output_dir=output_dir, state_file=state_file)
+    def mock_auth(self):
+        """Create a mock XApiAuth instance."""
+        from unittest.mock import AsyncMock
+        auth = AsyncMock()
+        auth.get_valid_token = AsyncMock(return_value="test-token")
+        return auth
 
     @pytest.fixture
-    def mock_thread_skill_output(self):
-        """Sample successful skill output for a thread."""
-        return {
-            "success": True,
-            "source": "bird",
-            "author": "naval",
-            "tweet_count": 2,
-            "tweets": [
-                {
-                    "id": "thread_001",
-                    "text": "1/ How to Get Rich 🧵",
-                    "author_username": "naval",
-                    "is_thread": True,
-                    "thread_position": 1,
-                    "media_urls": [],
-                    "links": [],
-                    "url": "https://x.com/naval/status/thread_001",
-                },
-                {
-                    "id": "thread_002",
-                    "text": "2/ Seek wealth, not money",
-                    "author_username": "naval",
-                    "is_thread": True,
-                    "thread_position": 2,
-                    "media_urls": [],
-                    "links": [],
-                },
-            ],
-        }
+    def pipeline(self, output_dir: Path, state_file: Path, mock_auth) -> Pipeline:
+        """Create a pipeline instance with mock auth."""
+        return Pipeline(output_dir=output_dir, state_file=state_file, x_api_auth=mock_auth)
 
     @pytest.mark.asyncio
     async def test_pipeline_thread_e2e(
@@ -582,32 +559,56 @@ class TestPipelineThreadE2E:
         pipeline: Pipeline,
         tmp_path: Path,
         output_dir: Path,
-        mock_thread_skill_output,
     ):
-        """Export with thread → skill called → note generated."""
-        from unittest.mock import MagicMock, patch
+        """Export with thread → X API search → note generated."""
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         # Create export with a thread bookmark
         # Using multiple thread signals to ensure classification as THREAD
         export_data = [
             {
-                "tweet_id": "thread_001",
-                "url": "https://x.com/naval/status/thread_001",
+                "tweet_id": "8000001",
+                "url": "https://x.com/naval/status/8000001",
                 "full_text": "1/ How to Get Rich 🧵 (thread)",
                 "screen_name": "naval",
-                "conversation_id": "thread_001",  # Thread signal
+                "conversation_id": "8000001",
             }
         ]
         export_path = tmp_path / "thread_export.json"
         export_path.write_text(json.dumps(export_data))
 
-        # Mock the subprocess call to thread skill
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = json.dumps(mock_thread_skill_output)
-        mock_result.stderr = ""
+        # Mock X API search response for thread
+        mock_search_response = MagicMock()
+        mock_search_response.status_code = 200
+        mock_search_response.json.return_value = {
+            "data": [
+                {
+                    "id": "8000001",
+                    "text": "1/ How to Get Rich",
+                    "conversation_id": "8000001",
+                    "author_id": "uid1",
+                },
+                {
+                    "id": "8000002",
+                    "text": "2/ Seek wealth, not money",
+                    "conversation_id": "8000001",
+                    "author_id": "uid1",
+                },
+            ],
+            "includes": {
+                "users": [{"id": "uid1", "username": "naval"}],
+            },
+        }
 
-        with patch("subprocess.run", return_value=mock_result):
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_search_response)
+        mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+        mock_httpx_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch(
+            "src.processors.thread_processor.httpx.AsyncClient",
+            return_value=mock_httpx_client,
+        ):
             result = await pipeline.process_export(export_path)
 
         assert result.processed == 1
@@ -1146,3 +1147,216 @@ class TestPipelineLinkE2E:
         assert result.processed == 1
         # LLM should NOT have been called since cache was hit
         assert not llm_called
+
+
+class TestProcessBookmarks:
+    """Tests for the process_bookmarks() method (accepts Bookmark list directly)."""
+
+    @pytest.fixture
+    def output_dir(self, tmp_path: Path) -> Path:
+        return tmp_path / "notes"
+
+    @pytest.fixture
+    def state_file(self, tmp_path: Path) -> Path:
+        return tmp_path / "state.json"
+
+    @pytest.fixture
+    def pipeline(self, output_dir: Path, state_file: Path) -> Pipeline:
+        return Pipeline(output_dir=output_dir, state_file=state_file)
+
+    @pytest.mark.asyncio
+    async def test_processes_bookmark_list(self, pipeline, output_dir):
+        """process_bookmarks accepts a list of Bookmark instances."""
+        bookmarks = [
+            Bookmark(
+                id="pb_001",
+                url="https://twitter.com/u/status/pb_001",
+                text="Direct bookmark test",
+                author_username="testuser",
+            ),
+            Bookmark(
+                id="pb_002",
+                url="https://twitter.com/u/status/pb_002",
+                text="Second direct bookmark",
+                author_username="testuser2",
+            ),
+        ]
+
+        result = await pipeline.process_bookmarks(bookmarks)
+
+        assert result.processed == 2
+        assert result.failed == 0
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 2
+
+    @pytest.mark.asyncio
+    async def test_process_export_delegates_to_process_bookmarks(
+        self, pipeline, tmp_path, output_dir
+    ):
+        """process_export is a thin wrapper around process_bookmarks."""
+        export_data = [
+            {
+                "tweet_id": "pe_001",
+                "url": "https://twitter.com/u/status/pe_001",
+                "full_text": "Wrapper test",
+                "screen_name": "user",
+            }
+        ]
+        export_path = tmp_path / "export.json"
+        export_path.write_text(json.dumps(export_data))
+
+        result = await pipeline.process_export(export_path)
+
+        assert result.processed == 1
+        notes = list(output_dir.glob("*.md"))
+        assert len(notes) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_bookmark_list(self, pipeline):
+        """Empty list returns zero counts."""
+        result = await pipeline.process_bookmarks([])
+        assert result.processed == 0
+        assert result.skipped == 0
+        assert result.failed == 0
+
+
+class TestResolveTcoLinks:
+    """Tests for t.co URL resolution before classification."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_tco_to_external_link(self):
+        """t.co URL in text is resolved and added to bookmark.links."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        bookmark = Bookmark(
+            id="tco_001",
+            url="https://twitter.com/user/status/tco_001",
+            text="https://t.co/abc123",
+            author_username="user",
+            links=[],
+        )
+
+        # Mock httpx to resolve t.co to an external URL
+        mock_response = MagicMock()
+        mock_response.url = "https://example.com/article"
+
+        mock_client = MagicMock()
+        mock_client.head = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.core.pipeline.httpx.AsyncClient", return_value=mock_client):
+            await Pipeline._resolve_tco_links(bookmark)
+
+        assert bookmark.links == ["https://example.com/article"]
+
+    @pytest.mark.asyncio
+    async def test_skips_tco_resolving_to_twitter(self):
+        """t.co that resolves to twitter.com is not added to links."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        bookmark = Bookmark(
+            id="tco_002",
+            url="https://twitter.com/user/status/tco_002",
+            text="https://t.co/xyz789",
+            author_username="user",
+            links=[],
+        )
+
+        mock_response = MagicMock()
+        mock_response.url = "https://twitter.com/other/status/999"
+
+        mock_client = MagicMock()
+        mock_client.head = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.core.pipeline.httpx.AsyncClient", return_value=mock_client):
+            await Pipeline._resolve_tco_links(bookmark)
+
+        assert bookmark.links == []
+
+    @pytest.mark.asyncio
+    async def test_skips_when_links_already_populated(self):
+        """Does not resolve if bookmark already has links."""
+        bookmark = Bookmark(
+            id="tco_003",
+            url="https://twitter.com/user/status/tco_003",
+            text="https://t.co/abc123 check this out",
+            author_username="user",
+            links=["https://existing.com/page"],
+        )
+
+        await Pipeline._resolve_tco_links(bookmark)
+
+        # Links unchanged - no resolution attempted
+        assert bookmark.links == ["https://existing.com/page"]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_tco_in_text(self):
+        """Does not try resolution when text has no t.co URLs."""
+        bookmark = Bookmark(
+            id="tco_004",
+            url="https://twitter.com/user/status/tco_004",
+            text="Just a regular tweet with no links",
+            author_username="user",
+            links=[],
+        )
+
+        await Pipeline._resolve_tco_links(bookmark)
+
+        assert bookmark.links == []
+
+    @pytest.mark.asyncio
+    async def test_handles_resolution_failure_gracefully(self):
+        """Network errors during resolution are logged, not raised."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        bookmark = Bookmark(
+            id="tco_005",
+            url="https://twitter.com/user/status/tco_005",
+            text="https://t.co/broken",
+            author_username="user",
+            links=[],
+        )
+
+        mock_client = MagicMock()
+        mock_client.head = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.core.pipeline.httpx.AsyncClient", return_value=mock_client):
+            await Pipeline._resolve_tco_links(bookmark)
+
+        # No crash, links stays empty
+        assert bookmark.links == []
+
+    @pytest.mark.asyncio
+    async def test_tco_bookmark_classified_as_link(self):
+        """Full integration: t.co-only tweet becomes LINK type after resolution."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        bookmark = Bookmark(
+            id="tco_int_001",
+            url="https://twitter.com/user/status/tco_int_001",
+            text="https://t.co/realArticle",
+            author_username="user",
+            links=[],
+        )
+
+        mock_response = MagicMock()
+        mock_response.url = "https://blog.example.com/great-post"
+
+        mock_client = MagicMock()
+        mock_client.head = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.core.pipeline.httpx.AsyncClient", return_value=mock_client):
+            await Pipeline._resolve_tco_links(bookmark)
+
+        # Now classify - should be LINK, not TWEET
+        from src.core.classifier import classify
+
+        content_type = classify(bookmark)
+        assert content_type == ContentType.LINK

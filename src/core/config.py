@@ -28,6 +28,10 @@ class Config:
         rate_limit_link: Minimum seconds between link fetches.
         log_level: Logging verbosity (DEBUG, INFO, WARNING, ERROR).
         max_concurrent_workers: Maximum parallel processing workers.
+        llm_provider: Which LLM provider to use (anthropic, openai, gemini).
+        llm_model: Override default model for the selected provider.
+        openai_api_key: API key for OpenAI (optional, only if using openai provider).
+        gemini_api_key: API key for Google Gemini (optional, only if using gemini provider).
     """
 
     # Required
@@ -43,6 +47,18 @@ class Config:
     rate_limit_link: float = 0.2
     log_level: str = "INFO"
     max_concurrent_workers: int = 5
+
+    # Multi-LLM provider settings
+    llm_provider: str = "anthropic"
+    llm_model: str | None = None
+    openai_api_key: str | None = None
+    gemini_api_key: str | None = None
+
+    # X API settings
+    x_api_client_id: str | None = None
+    x_api_token_file: Path = field(default_factory=lambda: Path("data/x_api_tokens.json"))
+    x_api_poll_interval: int = 900  # 15 minutes
+    bookmark_source: str = "twillot"  # "twillot", "x_api", or "both"
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
@@ -74,6 +90,32 @@ class Config:
         # Validate workers
         if self.max_concurrent_workers < 1:
             raise ConfigurationError("TWITTER_MAX_WORKERS must be at least 1")
+
+        # Validate LLM provider
+        valid_providers = {"anthropic", "openai", "gemini"}
+        if self.llm_provider.lower() not in valid_providers:
+            raise ConfigurationError(
+                f"Invalid LLM_PROVIDER '{self.llm_provider}'. "
+                f"Must be one of: {', '.join(sorted(valid_providers))}"
+            )
+        self.llm_provider = self.llm_provider.lower()
+
+        # Validate bookmark source
+        valid_sources = {"twillot", "x_api", "both"}
+        if self.bookmark_source.lower() not in valid_sources:
+            raise ConfigurationError(
+                f"Invalid BOOKMARK_SOURCE '{self.bookmark_source}'. "
+                f"Must be one of: {', '.join(sorted(valid_sources))}"
+            )
+        self.bookmark_source = self.bookmark_source.lower()
+
+        # Ensure x_api_token_file is a Path
+        if isinstance(self.x_api_token_file, str):
+            self.x_api_token_file = Path(self.x_api_token_file)
+
+        # Validate poll interval
+        if self.x_api_poll_interval < 60:
+            raise ConfigurationError("X_API_POLL_INTERVAL must be at least 60 seconds")
 
 
 def load_config(*, require_api_key: bool = True) -> Config:
@@ -130,6 +172,16 @@ def load_config(*, require_api_key: bool = True) -> Config:
         rate_limit_link=get_float("TWITTER_RATE_LIMIT_LINK", 0.2),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         max_concurrent_workers=get_int("TWITTER_MAX_WORKERS", 5),
+        llm_provider=os.environ.get("LLM_PROVIDER", "anthropic"),
+        llm_model=os.environ.get("LLM_MODEL") or None,
+        openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
+        gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
+        x_api_client_id=os.environ.get("X_API_CLIENT_ID") or None,
+        x_api_token_file=Path(
+            os.environ.get("X_API_TOKEN_FILE", "data/x_api_tokens.json")
+        ),
+        x_api_poll_interval=get_int("X_API_POLL_INTERVAL", 900),
+        bookmark_source=os.environ.get("BOOKMARK_SOURCE", "twillot"),
     )
 
 
