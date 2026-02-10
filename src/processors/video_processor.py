@@ -100,7 +100,11 @@ class VideoProcessor(BaseProcessor):
         )
 
         if result.returncode != 0:
-            error_msg = result.stderr.strip() if result.stderr else "Unknown skill error"
+            error_msg = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Unknown skill error (no output)"
+            )
             raise SkillError(f"youtube-video skill failed: {error_msg}")
 
         try:

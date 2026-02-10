@@ -461,6 +461,12 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="Clear ERROR entries from state so they get reprocessed on next run",
+    )
+
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose (DEBUG) logging",
@@ -498,6 +504,17 @@ def main(args: list[str] | None = None) -> int:
     if parsed_args.authorize:
         # X API OAuth authorization flow (no LLM needed)
         return asyncio.run(_run_authorize(config))
+
+    # Handle --retry-errors: clear ERROR entries before processing
+    if parsed_args.retry_errors:
+        state_manager = StateManager(config.state_file)
+        cleared = state_manager.reset_errors()
+        if cleared:
+            logger.info("Cleared %d error entries for retry: %s", len(cleared), cleared)
+            print(f"Cleared {len(cleared)} error entries for retry")
+        else:
+            logger.info("No error entries to clear")
+            print("No error entries to clear")
 
     # Default backlog directory (relative to workspace)
     backlog_dir = Path("data/backlog")

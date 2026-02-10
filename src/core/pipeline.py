@@ -22,6 +22,7 @@ import httpx
 from src.core.bookmark import ContentType, ProcessingStatus
 from src.core.classifier import classify
 from src.core.rate_limiter import RateLimiter
+from src.core.retry import retry_async
 from src.core.state_manager import StateManager
 from src.output.obsidian_writer import ObsidianWriter
 from src.processors.link_processor import LinkProcessor
@@ -326,13 +327,18 @@ class Pipeline:
             )
             return None
 
-        # Process the bookmark
-        process_result: "ProcessResult" = await processor.process(bookmark)
+        # Process the bookmark with retry for transient failures
+        async def _do_process() -> "ProcessResult":
+            r = await processor.process(bookmark)
+            if not r.success:
+                raise RuntimeError(
+                    f"Processing failed: {r.error or 'Unknown error'}"
+                )
+            return r
 
-        if not process_result.success:
-            raise RuntimeError(
-                f"Processing failed: {process_result.error or 'Unknown error'}"
-            )
+        process_result = await retry_async(
+            _do_process, max_attempts=3, base_delay=2.0, max_delay=30.0
+        )
 
         # Write to Obsidian
         output_path = self.writer.write(bookmark, process_result)

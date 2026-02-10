@@ -190,6 +190,30 @@ class StateManager:
         self._ensure_loaded()
         return list(self._state["processed"].keys())
 
+    def reset_errors(self) -> list[str]:
+        """Remove all ERROR entries from state so they get reprocessed.
+
+        Returns:
+            List of bookmark IDs that were cleared.
+        """
+        self._ensure_loaded()
+        cleared: list[str] = []
+
+        to_remove = [
+            bid
+            for bid, entry in self._state["processed"].items()
+            if entry.get("status") == ProcessingStatus.ERROR.value
+        ]
+
+        for bid in to_remove:
+            del self._state["processed"][bid]
+            cleared.append(bid)
+
+        if cleared:
+            self.save()
+
+        return cleared
+
     def get_stats(self) -> dict[str, int]:
         """Get processing statistics.
 

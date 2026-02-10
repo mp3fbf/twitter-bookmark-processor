@@ -10,6 +10,8 @@
 #     -w "$(op read 'op://Dev/twitter-bookmark-processor anthropic key/credential')"
 #   security add-generic-password -a "twitter-processor" -s "x-api-client-id" \
 #     -w "$(op read 'op://Dev/Claudexx X app API/Client Secret ID')"
+#   security add-generic-password -a "twitter-processor" -s "google-api-key" \
+#     -w "YOUR_GOOGLE_API_KEY"
 
 set -e
 
@@ -41,6 +43,14 @@ if [[ $? -ne 0 ]] || [[ -z "$ANTHROPIC_API_KEY" ]]; then
 fi
 export ANTHROPIC_API_KEY
 log "Anthropic key loaded (${#ANTHROPIC_API_KEY} chars)"
+
+GOOGLE_API_KEY=$(security find-generic-password -a "twitter-processor" -s "google-api-key" -w 2>/dev/null || true)
+if [[ -n "$GOOGLE_API_KEY" ]]; then
+    export GOOGLE_API_KEY
+    log "Google API key loaded (${#GOOGLE_API_KEY} chars)"
+else
+    log "WARNING: google-api-key not in Keychain (video processing will fail)"
+fi
 
 X_API_CLIENT_ID=$(security find-generic-password -a "twitter-processor" -s "x-api-client-id" -w 2>/dev/null || true)
 if [[ -n "$X_API_CLIENT_ID" ]]; then
