@@ -49,20 +49,36 @@ if [[ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]]; then
     exit 1
 fi
 
-# Fetch ANTHROPIC_API_KEY from 1Password
-log "Fetching Anthropic key from 1Password..."
-ANTHROPIC_API_KEY=$(op read "op://Dev/twitter-bookmark-processor anthropic key/credential" 2>&1)
-OP_EXIT=$?
+# Load ANTHROPIC_API_KEY (file first, 1Password fallback)
+KEY_FILE="$HOME/.secrets/anthropic-key-twitter"
+if [[ -f "$KEY_FILE" ]]; then
+    ANTHROPIC_API_KEY=$(cat "$KEY_FILE")
+    log "Anthropic key loaded from file (${#ANTHROPIC_API_KEY} chars)"
+else
+    log "Key file not found, trying 1Password..."
+    ANTHROPIC_API_KEY=$(op read "op://Dev/twitter-bookmark-processor anthropic key/credential" 2>&1)
+    OP_EXIT=$?
+    if [[ $OP_EXIT -ne 0 ]] || [[ -z "$ANTHROPIC_API_KEY" ]]; then
+        log_err "Failed to fetch ANTHROPIC_API_KEY (exit: $OP_EXIT, output: $ANTHROPIC_API_KEY)"
+        exit 1
+    fi
+    log "Anthropic key loaded from 1Password (${#ANTHROPIC_API_KEY} chars)"
+fi
 
-if [[ $OP_EXIT -ne 0 ]] || [[ -z "$ANTHROPIC_API_KEY" ]]; then
-    log_err "Failed to fetch ANTHROPIC_API_KEY (exit: $OP_EXIT, output: $ANTHROPIC_API_KEY)"
+if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+    log_err "ANTHROPIC_API_KEY is empty"
     exit 1
 fi
 export ANTHROPIC_API_KEY
 
-# Fetch X API Client ID from 1Password
-log "Fetching X API credentials..."
-X_API_CLIENT_ID=$(op read "op://Dev/Claudexx X app API/Client Secret ID" 2>/dev/null || true)
+# Load X API Client ID (file first, 1Password fallback)
+XID_FILE="$HOME/.secrets/x-api-client-id"
+if [[ -f "$XID_FILE" ]]; then
+    X_API_CLIENT_ID=$(cat "$XID_FILE")
+    log "X API Client ID loaded from file (${#X_API_CLIENT_ID} chars)"
+else
+    X_API_CLIENT_ID=$(op read "op://Dev/Claudexx X app API/Client Secret ID" 2>/dev/null || true)
+fi
 if [[ -n "$X_API_CLIENT_ID" ]]; then
     export X_API_CLIENT_ID
     export BOOKMARK_SOURCE="${BOOKMARK_SOURCE:-both}"
@@ -76,14 +92,10 @@ else
     export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/twitter/}"
 fi
 
-# Log startup (without exposing keys)
+# Log startup
 log "Starting twitter-processor daemon..."
-log "Anthropic key loaded (${#ANTHROPIC_API_KEY} chars)"
 log "Output dir: $TWITTER_OUTPUT_DIR"
 log "Bookmark source: ${BOOKMARK_SOURCE:-twillot}"
-if [[ -n "$X_API_CLIENT_ID" ]]; then
-    log "X API Client ID loaded (${#X_API_CLIENT_ID} chars)"
-fi
 
 # Ensure output directory exists
 mkdir -p "$TWITTER_OUTPUT_DIR"
