@@ -153,6 +153,32 @@ python -m src.main --port 8766
 
 See [docs/ios-shortcut.md](docs/ios-shortcut.md) for iOS Shortcut setup.
 
+### Brain Vault Sync (Obsidian)
+
+When the output directory is inside `~/brain/` (the Obsidian vault), `run-processor.sh` automatically calls `sync-brain.sh` after each processing cycle:
+
+```
+Daemon processes bookmarks
+    │
+    ▼
+sync-brain.sh
+    ├── 1. Detect changes in Sources/twitter/
+    ├── 2. git commit + push → Gitea (Mac Mini)
+    └── 3. Tailscale SSH → MacBook: git pull --ff-only
+                                        │
+                                        ▼
+                                   Obsidian synced
+```
+
+The MacBook pull is best-effort — if the MacBook is offline or unreachable, the script logs a warning and continues. Next time the MacBook comes online, a manual `cd ~/brain && git pull` catches up.
+
+**Environment overrides:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TAILSCALE` | auto-detected | Path to `tailscale` CLI |
+| `MACBOOK_USER` | `robertocunha` | SSH username on MacBook |
+
 ### Option 3: macOS launchd
 
 Create `~/Library/LaunchAgents/com.user.twitter-processor.plist`:
