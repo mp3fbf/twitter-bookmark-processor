@@ -15,7 +15,9 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,6 +38,27 @@ logger = get_logger(__name__)
 
 # Default polling interval in seconds (2 minutes)
 DEFAULT_POLL_INTERVAL = 120
+
+
+def sync_brain(output_dir: Path) -> None:
+    """Run sync-brain.sh if output dir is inside a Brain vault."""
+    output_str = str(output_dir)
+    if "/brain/" not in output_str:
+        return
+
+    sync_script = Path(__file__).resolve().parent.parent / "deploy" / "sync-brain.sh"
+    if not sync_script.exists():
+        return
+
+    try:
+        subprocess.run(
+            ["bash", str(sync_script), output_str],
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as e:
+        logger.warning("Brain sync failed: %s", e)
 
 # Shutdown event for graceful termination
 _shutdown_event: asyncio.Event | None = None
@@ -230,6 +253,7 @@ async def run_daemon(
                         result.skipped,
                         result.failed,
                     )
+                    sync_brain(output_dir)
             except asyncio.CancelledError:
                 logger.info("Processing cycle cancelled")
                 break

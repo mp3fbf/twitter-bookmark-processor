@@ -56,8 +56,13 @@ if [[ -n "$X_API_CLIENT_ID" ]]; then
     export BOOKMARK_SOURCE="${BOOKMARK_SOURCE:-both}"
 fi
 
-# Set output directory for Mac Mini (maps to /workspace/notes/twitter/ inside container)
-export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/twitter/}"
+# Output directory: Brain vault (synced to MacBook via Gitea)
+# Falls back to projects dir if brain vault doesn't exist
+if [[ -d "$HOME/brain/Sources" ]]; then
+    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/brain/Sources/twitter/}"
+else
+    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/twitter/}"
+fi
 
 # Log startup (without exposing keys)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting twitter-processor daemon..."
@@ -73,4 +78,13 @@ mkdir -p "$TWITTER_OUTPUT_DIR"
 
 # Execute the processor (passes through any CLI arguments)
 cd "$PROJECT_DIR"
-exec "$VENV_PYTHON" -m src.main "$@"
+"$VENV_PYTHON" -m src.main "$@"
+EXIT_CODE=$?
+
+# Sync brain vault if output dir is inside brain and notes were written
+SYNC_SCRIPT="$SCRIPT_DIR/sync-brain.sh"
+if [[ "$TWITTER_OUTPUT_DIR" == *"/brain/"* ]] && [[ -f "$SYNC_SCRIPT" ]]; then
+    bash "$SYNC_SCRIPT" "$TWITTER_OUTPUT_DIR"
+fi
+
+exit $EXIT_CODE

@@ -3,6 +3,9 @@ title: {{ title | yaml_escape }}
 author: {{ author | yaml_escape }}
 source: {{ source }}
 type: {{ content_type }}
+{% if moc %}
+up: "[[{{ moc }}]]"
+{% endif %}
 {% if tags %}
 tags:
 {% for tag in tags %}
@@ -17,6 +20,12 @@ tweet_id: {{ tweet_id }}
 ---
 
 {% block content %}{% endblock %}
+{% if wikilinks %}
+
+## Topics
+
+{% for wl in wikilinks %}[[{{ wl }}]]{% if not loop.last %} · {% endif %}{% endfor %}
+{% endif %}
 
 ---
 *Processed by twitter-bookmark-processor v{{ processor_version }}*

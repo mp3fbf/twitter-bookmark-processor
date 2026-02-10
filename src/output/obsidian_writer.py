@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader
 
+from src.output.graph_enricher import enrich
+
 if TYPE_CHECKING:
     from src.core.bookmark import Bookmark
     from src.processors.base import ProcessResult
 
 # Processor version for footer
-PROCESSOR_VERSION = "0.1.0"
+PROCESSOR_VERSION = "0.3.0"
 
 # Path to templates directory
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -198,12 +200,22 @@ class ObsidianWriter:
         body = result.content or ""
         tldr = self._extract_tldr(body, title)
 
+        # Enrich with graph metadata (tags, wikilinks, MOC)
+        graph = enrich(
+            title=title,
+            body=body,
+            content_type=bookmark.content_type.value,
+            author_username=bookmark.author_username,
+        )
+
         context = {
             "title": title,
             "author": "@" + bookmark.author_username,
             "source": bookmark.url,
             "content_type": bookmark.content_type.value,
-            "tags": result.tags or [],
+            "tags": graph["tags"],
+            "wikilinks": graph["wikilinks"],
+            "moc": graph["moc"],
             "tweet_date": bookmark.created_at,
             "processed_at": now,
             "tweet_id": bookmark.id,
