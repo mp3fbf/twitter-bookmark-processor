@@ -409,10 +409,10 @@ class TestVideoOutputHandling:
             assert result.output_file is None
 
     @pytest.mark.asyncio
-    async def test_video_output_passes_output_dir_to_skill(
+    async def test_video_skill_does_not_pass_output_dir(
         self, youtube_bookmark, mock_skill_output, tmp_path
     ):
-        """output_dir is passed to skill as -o argument."""
+        """Skill is NOT passed -o flag (ObsidianWriter handles file writing)."""
         processor = VideoProcessor(timeout=10, output_dir=tmp_path)
 
         mock_result = MagicMock()
@@ -424,5 +424,4 @@ class TestVideoOutputHandling:
             await processor.process(youtube_bookmark)
 
             cmd = mock_run.call_args[0][0]
-            assert "-o" in cmd
-            assert str(tmp_path) in cmd
+            assert "-o" not in cmd

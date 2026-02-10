@@ -88,8 +88,6 @@ class VideoProcessor(BaseProcessor):
 
     async def _call_skill(self, url: str) -> tuple[dict, Optional[Path]]:
         cmd = [sys.executable, str(self.SKILL_SCRIPT), url, "--json"]
-        if self.output_dir:
-            cmd.extend(["-o", str(self.output_dir)])
 
         loop = asyncio.get_event_loop()
         result = await asyncio.wait_for(
