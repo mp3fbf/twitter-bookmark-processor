@@ -49,28 +49,20 @@ if [[ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]]; then
     exit 1
 fi
 
-# Fetch ANTHROPIC_API_KEY from 1Password (with 15s timeout to avoid silent hang)
+# Fetch ANTHROPIC_API_KEY from 1Password
 log "Fetching Anthropic key from 1Password..."
-OP_OUTPUT_FILE=$(mktemp)
-if timeout 15 op read "op://Dev/twitter-bookmark-processor anthropic key/credential" > "$OP_OUTPUT_FILE" 2>&1; then
-    ANTHROPIC_API_KEY=$(cat "$OP_OUTPUT_FILE")
-else
-    OP_EXIT=$?
-    log_err "Failed to fetch ANTHROPIC_API_KEY (exit: $OP_EXIT, output: $(cat "$OP_OUTPUT_FILE"))"
-    rm -f "$OP_OUTPUT_FILE"
-    exit 1
-fi
-rm -f "$OP_OUTPUT_FILE"
+ANTHROPIC_API_KEY=$(op read "op://Dev/twitter-bookmark-processor anthropic key/credential" 2>&1)
+OP_EXIT=$?
 
-if [[ -z "$ANTHROPIC_API_KEY" ]]; then
-    log_err "ANTHROPIC_API_KEY is empty after 1Password fetch"
+if [[ $OP_EXIT -ne 0 ]] || [[ -z "$ANTHROPIC_API_KEY" ]]; then
+    log_err "Failed to fetch ANTHROPIC_API_KEY (exit: $OP_EXIT, output: $ANTHROPIC_API_KEY)"
     exit 1
 fi
 export ANTHROPIC_API_KEY
 
 # Fetch X API Client ID from 1Password
 log "Fetching X API credentials..."
-X_API_CLIENT_ID=$(timeout 15 op read "op://Dev/Claudexx X app API/Client Secret ID" 2>/dev/null || true)
+X_API_CLIENT_ID=$(op read "op://Dev/Claudexx X app API/Client Secret ID" 2>/dev/null || true)
 if [[ -n "$X_API_CLIENT_ID" ]]; then
     export X_API_CLIENT_ID
     export BOOKMARK_SOURCE="${BOOKMARK_SOURCE:-both}"
