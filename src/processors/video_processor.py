@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -86,7 +87,7 @@ class VideoProcessor(BaseProcessor):
             )
 
     async def _call_skill(self, url: str) -> tuple[dict, Optional[Path]]:
-        cmd = ["python3", str(self.SKILL_SCRIPT), url, "--json"]
+        cmd = [sys.executable, str(self.SKILL_SCRIPT), url, "--json"]
         if self.output_dir:
             cmd.extend(["-o", str(self.output_dir)])
 

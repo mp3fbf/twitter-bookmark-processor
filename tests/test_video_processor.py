@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -110,7 +111,7 @@ class TestVideoProcessorCallsSkill:
 
             # Check command structure
             cmd = call_args[0][0]
-            assert cmd[0] == "python3"
+            assert cmd[0] == sys.executable
             assert "youtube_processor.py" in cmd[1]
             assert "youtube.com" in cmd[2]
             assert "--json" in cmd
