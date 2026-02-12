@@ -41,23 +41,21 @@ logger = get_logger(__name__)
 DEFAULT_POLL_INTERVAL = 120
 
 
-def sync_brain(output_dir: Path) -> None:
-    """Run sync-brain.sh if output dir is inside a Brain vault."""
-    output_str = str(output_dir)
-    if "/brain/" not in output_str:
-        return
-
+def sync_brain() -> None:
+    """Copy notes from projects → brain vault. No-op if ~/brain/ doesn't exist."""
     sync_script = Path(__file__).resolve().parent.parent / "deploy" / "sync-brain.sh"
     if not sync_script.exists():
         return
 
     try:
-        subprocess.run(
-            ["bash", str(sync_script), output_str],
+        result = subprocess.run(
+            ["bash", str(sync_script)],
             timeout=30,
             capture_output=True,
             text=True,
         )
+        if result.stdout.strip():
+            logger.info(result.stdout.strip())
     except Exception as e:
         logger.warning("Brain sync failed: %s", e)
 
@@ -254,7 +252,7 @@ async def run_daemon(
                         result.skipped,
                         result.failed,
                     )
-                    sync_brain(output_dir)
+                    sync_brain()
             except asyncio.CancelledError:
                 logger.info("Processing cycle cancelled")
                 break
