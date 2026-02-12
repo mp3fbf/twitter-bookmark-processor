@@ -1,0 +1,48 @@
+---
+title: {{ title | yaml_escape }}
+author: {{ author | yaml_escape }}
+source: {{ source }}
+type: insight
+value_type: {{ value_type }}
+{% if tags %}
+tags:
+{% for tag in tags %}
+  - {{ tag | yaml_escape }}
+{% endfor %}
+{% endif %}
+{% if tweet_date %}
+tweet_date: {{ tweet_date | yaml_escape }}
+{% endif %}
+processed_at: {{ processed_at }}
+bookmark_id: {{ bookmark_id }}
+---
+
+{% for section in sections %}
+## {{ section.heading }}
+
+{{ section.content }}
+
+{% endfor %}
+---
+
+## Original
+
+> {{ original_content | replace('\n', '\n> ') }}
+
+{% if media_urls %}
+## Media
+
+{% for url in media_urls %}
+![image]({{ url }})
+{% endfor %}
+{% endif %}
+{% if source_links %}
+## Sources
+
+{% for link in source_links %}
+- [{{ link.title or link.url }}]({{ link.url }})
+{% endfor %}
+{% endif %}
+
+---
+*Processed by Insight Engine v1.0*
