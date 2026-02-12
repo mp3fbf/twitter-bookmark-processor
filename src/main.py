@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -292,17 +293,15 @@ async def run_daemon(
 async def _run_authorize(config: "Config") -> int:
     """Run the X API OAuth 2.0 authorization flow.
 
-    Starts a temporary HTTP server to capture the OAuth callback,
-    opens the browser automatically, and exchanges the code for tokens.
+    Starts a callback server on 0.0.0.0:8766 and prints the auth URL.
+    The user opens the URL in any browser, approves, and either:
+    - The callback server captures the redirect automatically, OR
+    - The user pastes the redirect URL if the callback didn't reach us.
 
-    Args:
-        config: Application configuration with X API settings.
-
-    Returns:
-        Exit code (0 for success, 1 for errors).
+    One-time operation. With offline.access, refresh tokens auto-rotate.
     """
-    import re
-    import webbrowser
+    from urllib.parse import parse_qs, urlparse
+
     from aiohttp import web
 
     from src.sources.x_api_auth import XApiAuth
@@ -318,61 +317,68 @@ async def _run_authorize(config: "Config") -> int:
 
     url, state = auth.get_authorization_url()
 
-    # Shared state between server and main flow
+    # Shared state between callback server and main flow
     captured_code: dict[str, str | None] = {"code": None, "error": None}
     code_received = asyncio.Event()
 
     async def callback_handler(request: web.Request) -> web.Response:
-        """Capture the OAuth callback and extract the authorization code."""
         error = request.query.get("error")
         if error:
-            desc = request.query.get("error_description", error)
-            captured_code["error"] = desc
+            captured_code["error"] = request.query.get("error_description", error)
             code_received.set()
             return web.Response(
-                text=f"<h2>Authorization failed</h2><p>{desc}</p>"
-                "<p>You can close this tab.</p>",
+                text="<h2>Authorization failed</h2><p>You can close this tab.</p>",
                 content_type="text/html",
             )
-
         code = request.query.get("code")
         if code:
             captured_code["code"] = code
             code_received.set()
             return web.Response(
                 text="<h2>Authorization successful!</h2>"
-                "<p>You can close this tab and return to the terminal.</p>",
+                "<p>You can close this tab.</p>",
                 content_type="text/html",
             )
-
         return web.Response(text="Missing code parameter", status=400)
 
-    # Start temporary callback server
+    # Start callback server on 0.0.0.0 (reachable from outside container)
     app = web.Application()
     app.router.add_get("/oauth/callback", callback_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", 8766)
+    site = web.TCPSite(runner, "0.0.0.0", 8766)
     await site.start()
 
     print("\n=== X API Authorization ===\n")
-    print("Opening browser for authorization...")
-    webbrowser.open(url)
-    print(f"\nIf the browser didn't open, visit:\n  {url}\n")
-    print("Waiting for callback...")
+    print("Open this URL in your browser:\n")
+    print(f"  {url}\n")
+    print("After approving, one of two things will happen:")
+    print("  1. The page loads 'Authorization successful' → done automatically")
+    print("  2. The page fails to load → copy the URL from your address bar\n")
+    print("Waiting for callback (or paste the redirect URL below)...\n")
+
+    # Race: callback server vs manual paste
+    async def wait_for_paste():
+        """Read pasted URL from stdin in a thread."""
+        loop = asyncio.get_event_loop()
+        pasted = await loop.run_in_executor(None, sys.stdin.readline)
+        pasted = pasted.strip()
+        if pasted and "code=" in pasted:
+            parsed = parse_qs(urlparse(pasted).query)
+            if "code" in parsed:
+                captured_code["code"] = parsed["code"][0]
+                code_received.set()
+
+    paste_task = asyncio.create_task(wait_for_paste())
 
     try:
-        # Wait for callback (timeout 5 minutes)
         await asyncio.wait_for(code_received.wait(), timeout=300)
     except asyncio.TimeoutError:
-        print("\nTimeout waiting for authorization (5 minutes).", file=sys.stderr)
-        await runner.cleanup()
-        return 1
-    except KeyboardInterrupt:
-        print("\nAuthorization cancelled.")
+        print("\nTimeout (5 min). Run --authorize again.", file=sys.stderr)
         await runner.cleanup()
         return 1
 
+    paste_task.cancel()
     await runner.cleanup()
 
     if captured_code["error"]:
@@ -388,7 +394,9 @@ async def _run_authorize(config: "Config") -> int:
         tokens = await auth.exchange_code(code)
         print("\nAuthorization successful!")
         print(f"Tokens saved to: {auth.token_file}")
-        print(f"Access token expires in: {int(tokens.expires_at - __import__('time').time())}s")
+        print(f"Scopes: {tokens.scope}")
+        print(f"Access token expires in: {int(tokens.expires_at - time.time())}s")
+        print("Refresh token will auto-rotate on each use (valid 6 months).")
         return 0
     except Exception as e:
         print(f"\nToken exchange failed: {e}", file=sys.stderr)
