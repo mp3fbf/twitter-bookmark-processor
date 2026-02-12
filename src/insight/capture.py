@@ -107,6 +107,14 @@ class ContentCapture:
         """
         start = time.perf_counter()
 
+        # Enrich thin bookmarks (backfill) via X API or legacy notes
+        if not bookmark.text:
+            if self._x_api_auth:
+                await self._enrich_bookmark(bookmark)
+            # Fallback: try to read from legacy output file
+            if not bookmark.text:
+                self._enrich_from_legacy(bookmark)
+
         # Base package from bookmark data
         package = ContentPackage(
             bookmark_id=bookmark.id,
@@ -178,6 +186,125 @@ class ContentCapture:
         self._persist(package)
 
         return package
+
+    # ── Bookmark enrichment ───────────────────────────────────────
+
+    async def _enrich_bookmark(self, bookmark: "Bookmark") -> None:
+        """Enrich a thin bookmark (backfill) with data from X API.
+
+        Mutates the bookmark in place with tweet text, author info,
+        links, media URLs, and conversation_id.
+        """
+        try:
+            token = await self._x_api_auth.get_valid_token()
+            data = await self._fetch_tweet_api(token, bookmark.id)
+            if not data:
+                logger.warning("Could not enrich bookmark %s via X API", bookmark.id)
+                return
+
+            # Tweet text (prefer note_tweet for long tweets)
+            note_tweet = data.get("note_tweet")
+            if note_tweet and note_tweet.get("text"):
+                bookmark.text = note_tweet["text"]
+            else:
+                bookmark.text = data.get("text", "")
+
+            bookmark.created_at = data.get("created_at", "")
+            bookmark.conversation_id = data.get("conversation_id")
+
+            # Author info from includes
+            author_id = data.get("author_id")
+            if author_id:
+                bookmark.author_id = author_id
+
+            # Extract links and media from entities
+            bookmark.links = self._extract_links_from_api_tweet(data)
+            bookmark.media_urls = self._extract_media_from_api_tweet(data)
+
+            # Detect thread
+            if bookmark.conversation_id and bookmark.conversation_id == bookmark.id:
+                bookmark.is_thread = True
+
+            logger.info("Enriched bookmark %s: %d chars, %d links",
+                        bookmark.id, len(bookmark.text), len(bookmark.links))
+
+        except Exception as e:
+            logger.warning("Enrichment failed for %s: %s", bookmark.id, e)
+
+    def _enrich_from_legacy(self, bookmark: "Bookmark") -> None:
+        """Enrich a bookmark from its legacy processed output file.
+
+        Parses the YAML frontmatter and content section of the legacy
+        Obsidian note to extract tweet text, author, and links.
+        """
+        from src.core.state_manager import StateManager
+
+        try:
+            # Find the legacy output file via state.json
+            legacy_state_file = PACKAGES_DIR.parent / "state.json"
+            if not legacy_state_file.exists():
+                return
+
+            state = StateManager(legacy_state_file)
+            state.load()
+            entry = state._state.get("processed", {}).get(bookmark.id)
+            if not entry or not entry.get("output_path"):
+                return
+
+            output_path = Path(entry["output_path"])
+            if not output_path.exists():
+                return
+
+            content = output_path.read_text(encoding="utf-8")
+
+            # Parse YAML frontmatter
+            if content.startswith("---"):
+                end = content.index("---", 3)
+                frontmatter = content[3:end]
+                body = content[end + 3:]
+
+                for line in frontmatter.split("\n"):
+                    if line.startswith("author:"):
+                        author = line.split(":", 1)[1].strip().strip("'\"@")
+                        if author and bookmark.author_username == "unknown":
+                            bookmark.author_username = author
+                            bookmark.author_name = author
+                    if line.startswith("tweet_date:"):
+                        date_str = line.split(":", 1)[1].strip().strip("'\"")
+                        if date_str:
+                            bookmark.created_at = date_str
+
+                # Extract tweet text from ## Content section
+                if "## Content" in body:
+                    content_section = body.split("## Content", 1)[1]
+                    # Stop at next ## heading
+                    if "\n## " in content_section:
+                        content_section = content_section.split("\n## ", 1)[0]
+                    # Clean up: remove author attribution lines
+                    lines = content_section.strip().split("\n")
+                    text_lines = [
+                        l for l in lines
+                        if l.strip() and not l.startswith("**") and not l.startswith("### ")
+                    ]
+                    if text_lines:
+                        bookmark.text = "\n".join(text_lines).strip()
+
+                # Extract URLs from body
+                import re
+                urls = re.findall(r'https?://[^\s\)\]"\'<>]+', body)
+                for url in urls:
+                    if self._is_safe_url(url) and url not in bookmark.links:
+                        # Skip twitter/x URLs that are just the tweet itself
+                        if f"/status/{bookmark.id}" in url:
+                            continue
+                        bookmark.links.append(url)
+
+            if bookmark.text:
+                logger.info("Enriched %s from legacy note: %d chars",
+                            bookmark.id, len(bookmark.text))
+
+        except Exception as e:
+            logger.debug("Could not enrich from legacy for %s: %s", bookmark.id, e)
 
     # ── URL handling ────────────────────────────────────────────────
 

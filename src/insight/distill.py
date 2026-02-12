@@ -171,6 +171,16 @@ class InsightDistiller:
                     result_text = block.text
                     break
 
+            # Strip markdown code fences if model wrapped the JSON
+            result_text = result_text.strip()
+            if result_text.startswith("```"):
+                # Remove opening fence (```json or ```)
+                first_newline = result_text.index("\n")
+                result_text = result_text[first_newline + 1:]
+                # Remove closing fence
+                if result_text.endswith("```"):
+                    result_text = result_text[:-3].strip()
+
             # Parse and validate
             note = InsightNote.model_validate_json(result_text)
 
