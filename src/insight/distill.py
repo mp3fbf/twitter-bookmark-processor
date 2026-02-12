@@ -143,8 +143,9 @@ class InsightDistiller:
         start = time.perf_counter()
         user_prompt = _build_user_prompt(package)
 
-        # Build the JSON schema for output_config
-        schema = InsightNote.model_json_schema()
+        # NOTE: output_config (structured JSON) cannot be used with extended_thinking.
+        # We rely on the system prompt + code fence stripping instead.
+        _ = InsightNote.model_json_schema()  # kept for future use when API supports both
 
         try:
             response = await self._client.messages.create(

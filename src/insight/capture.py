@@ -87,10 +87,12 @@ class ContentCapture:
         content_fetcher: AsyncContentFetcher | None = None,
         vision_provider: Optional["AnthropicProvider"] = None,
         x_api_auth: Optional["XApiAuth"] = None,
+        bearer_token: str | None = None,
     ):
         self._fetcher = content_fetcher or AsyncContentFetcher()
         self._vision = vision_provider
         self._x_api_auth = x_api_auth
+        self._bearer_token = bearer_token
 
     async def capture(self, bookmark: "Bookmark") -> ContentPackage:
         """Capture all content for a bookmark into a ContentPackage.
@@ -216,10 +218,16 @@ class ContentCapture:
             author_id = data.get("author_id")
             if author_id:
                 bookmark.author_id = author_id
+            includes = data.get("_includes", {})
+            for user in includes.get("users", []):
+                if user.get("id") == author_id:
+                    bookmark.author_username = user.get("username", bookmark.author_username)
+                    bookmark.author_name = user.get("name", bookmark.author_name)
+                    break
 
-            # Extract links and media from entities
+            # Extract links and media from entities + includes
             bookmark.links = self._extract_links_from_api_tweet(data)
-            bookmark.media_urls = self._extract_media_from_api_tweet(data)
+            bookmark.media_urls = self._extract_media_from_api_tweet(data, includes)
 
             # Detect thread
             if bookmark.conversation_id and bookmark.conversation_id == bookmark.id:
@@ -401,7 +409,11 @@ class ContentCapture:
         return result
 
     async def _fetch_tweet_api(self, token: str, tweet_id: str) -> dict | None:
-        """Fetch a single tweet by ID via X API."""
+        """Fetch a single tweet by ID via X API.
+
+        Returns the tweet data dict with an extra '_includes' key containing
+        the response's includes (users, media) for resolving author and media.
+        """
         try:
             async with create_client() as client:
                 response = await client.get(
@@ -417,7 +429,11 @@ class ContentCapture:
                 if response.status_code != 200:
                     logger.warning("Failed to fetch tweet %s: %s", tweet_id, response.status_code)
                     return None
-                return response.json().get("data")
+                body = response.json()
+                data = body.get("data")
+                if data and "includes" in body:
+                    data["_includes"] = body["includes"]
+                return data
         except Exception as e:
             logger.warning("Error fetching tweet %s: %s", tweet_id, e)
             return None
@@ -444,8 +460,12 @@ class ContentCapture:
                 if response.status_code != 200:
                     logger.warning("Thread search failed: %s", response.status_code)
                     return []
-                data = response.json()
-                tweets = data.get("data", [])
+                body = response.json()
+                tweets = body.get("data", [])
+                includes = body.get("includes", {})
+                # Attach includes to each tweet for media resolution
+                for tweet in tweets:
+                    tweet["_includes"] = includes
                 tweets.sort(key=lambda t: int(t.get("id", "0")))
                 return tweets
         except Exception as e:
@@ -453,19 +473,36 @@ class ContentCapture:
             return []
 
     @staticmethod
-    def _extract_media_from_api_tweet(tweet: dict) -> list[str]:
-        """Extract media URLs from an API tweet response."""
+    def _extract_media_from_api_tweet(tweet: dict, includes: dict | None = None) -> list[str]:
+        """Extract media URLs from an API tweet response.
+
+        Resolves media_keys via includes.media when available, falling back
+        to pbs.twimg.com URLs in entities.
+        """
         urls = []
+        includes = includes or tweet.get("_includes", {})
+
+        # Build media lookup from includes
+        media_map: dict[str, dict] = {}
+        for m in includes.get("media", []):
+            media_map[m["media_key"]] = m
+
+        # Resolve media_keys to actual URLs
         attachments = tweet.get("attachments", {})
         for key in attachments.get("media_keys", []):
-            # Media keys need includes.media to resolve — here we just note them
-            pass
-        # Use entities for URLs to images
-        entities = tweet.get("entities", {})
-        for url_entity in entities.get("urls", []):
-            expanded = url_entity.get("expanded_url", "")
-            if "pbs.twimg.com" in expanded:
-                urls.append(expanded)
+            media = media_map.get(key)
+            if media:
+                url = media.get("url") or media.get("preview_image_url")
+                if url:
+                    urls.append(url)
+
+        # Fallback: use entities for direct image URLs
+        if not urls:
+            entities = tweet.get("entities", {})
+            for url_entity in entities.get("urls", []):
+                expanded = url_entity.get("expanded_url", "")
+                if "pbs.twimg.com" in expanded:
+                    urls.append(expanded)
         return urls
 
     @staticmethod
