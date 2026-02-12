@@ -63,7 +63,7 @@ fi
 if [[ -d "$HOME/brain/Sources" ]]; then
     export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/brain/Sources/twitter/}"
 else
-    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/twitter/}"
+    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/Sources/twitter/}"
 fi
 
 log "Starting twitter-processor daemon..."
