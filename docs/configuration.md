@@ -20,7 +20,7 @@ All configuration is done via environment variables. The application validates c
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TWITTER_OUTPUT_DIR` | `/workspace/notes/twitter/` | Directory where Obsidian notes are written. |
+| `TWITTER_OUTPUT_DIR` | `/workspace/notes/Sources/twitter/` | Directory where Obsidian notes are written. Synced to brain via launchd. |
 | `TWITTER_STATE_FILE` | `data/state.json` | Path to JSON file tracking processed bookmarks. |
 | `TWITTER_CACHE_FILE` | `data/link_cache.json` | Path to link extraction cache (30-day TTL). |
 
@@ -62,8 +62,9 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # Webhook auth
 export TWITTER_WEBHOOK_TOKEN="your-secret-token"
 
-# Paths (optional, defaults work for standard setup)
-export TWITTER_OUTPUT_DIR="/workspace/notes/twitter/"
+# Paths (defaults work for standard Docker setup)
+# Notes land in ~/projects/notes/Sources/twitter/ → launchd syncs to ~/brain/
+export TWITTER_OUTPUT_DIR="/workspace/notes/Sources/twitter/"
 
 # Logging
 export LOG_LEVEL="INFO"
