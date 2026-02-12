@@ -544,6 +544,8 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
                 print(f"  {bid}: {status}")
             success = sum(1 for s in results.values() if s == "success")
             print(f"\nRetried {len(results)}: {success} success, {len(results) - success} failed")
+            if success > 0:
+                sync_brain()
         return 0
 
     # --reprocess-stage2: re-run distillation on all content packages
@@ -565,6 +567,8 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
                 print(f"  ✗ {bid}")
 
         print(f"\nReprocessed: {success}/{len(packages)}")
+        if success > 0:
+            sync_brain()
         return 0
 
     # --insight: process bookmarks through insight pipeline
@@ -637,6 +641,10 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
 
     stats = pipeline.state.get_stats()
     print(f"\nState: {stats}")
+
+    # Sync notes to brain vault (no-op inside container)
+    if processed > 0:
+        sync_brain()
 
     return 0 if failed == 0 else 1
 
