@@ -69,4 +69,8 @@ Thumbs.db
 # Project specific
 data/backlog/
 data/processed/
+data/content_packages/
+data/x_api_tokens.json
+data/state.json
+data/insight_state.json
 *.log

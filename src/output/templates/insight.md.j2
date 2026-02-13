@@ -4,6 +4,9 @@ author: {{ author | yaml_escape }}
 source: {{ source }}
 type: insight
 value_type: {{ value_type }}
+{% if moc %}
+up: "[[{{ moc }}]]"
+{% endif %}
 {% if tags %}
 tags:
 {% for tag in tags %}
@@ -42,6 +45,12 @@ bookmark_id: {{ bookmark_id }}
 {% for link in source_links %}
 - [{{ link.title or link.url }}]({{ link.url }})
 {% endfor %}
+{% endif %}
+{% if wikilinks %}
+
+## Topics
+
+{% for wl in wikilinks %}[[{{ wl }}]]{% if not loop.last %} · {% endif %}{% endfor %}
 {% endif %}
 
 ---

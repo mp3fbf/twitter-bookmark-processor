@@ -465,6 +465,7 @@ CONTENT_TYPE_TAGS = {
     "thread": "twitter/thread",
     "video": "twitter/video",
     "link": "twitter/link",
+    "insight": "twitter/insight",
 }
 
 

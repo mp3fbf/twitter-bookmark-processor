@@ -2,6 +2,9 @@
 
 Uses the insight.md.j2 Jinja2 template. Reuses sanitize_filename and
 yaml_escape from the existing ObsidianWriter module.
+
+Graph enrichment (wikilinks, hierarchical tags, MOC) is applied via
+graph_enricher.enrich() — same as the legacy ObsidianWriter.
 """
 
 import logging
@@ -11,6 +14,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from src.insight.models import ContentPackage, InsightNote
+from src.output.graph_enricher import enrich
 from src.output.obsidian_writer import TEMPLATES_DIR, sanitize_filename, _yaml_escape_filter
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,27 @@ class InsightWriter:
             filename = f"{safe_title} - {package.bookmark_id}.md"
             output_path = self._output_dir / filename
 
+        # Build full body from sections for graph analysis
+        body = "\n\n".join(
+            f"## {s.heading}\n\n{s.content}" for s in note.sections
+        )
+
+        # Enrich with graph metadata (wikilinks, hierarchical tags, MOC)
+        graph = enrich(
+            title=note.title,
+            body=body,
+            content_type="insight",
+            author_username=package.author_username,
+        )
+
+        # Merge tags: enricher (structural) first, then Opus (specific), no dupes
+        seen = set()
+        merged_tags = []
+        for tag in graph["tags"] + note.tags:
+            if tag not in seen:
+                seen.add(tag)
+                merged_tags.append(tag)
+
         # Build template context
         source_links = []
         for link in package.resolved_links:
@@ -62,7 +87,9 @@ class InsightWriter:
             "author": f"@{package.author_username}",
             "source": package.tweet_url,
             "value_type": note.value_type.value,
-            "tags": note.tags,
+            "tags": merged_tags,
+            "wikilinks": graph["wikilinks"],
+            "moc": graph["moc"],
             "tweet_date": package.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "bookmark_id": package.bookmark_id,
