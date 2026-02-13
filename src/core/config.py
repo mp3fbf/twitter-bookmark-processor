@@ -39,7 +39,7 @@ class Config:
 
     # Optional with defaults
     twitter_webhook_token: str | None = None
-    output_dir: Path = field(default_factory=lambda: Path("/workspace/notes/twitter/"))
+    output_dir: Path = field(default_factory=lambda: Path("/workspace/notes/Sources/twitter/"))
     state_file: Path = field(default_factory=lambda: Path("data/state.json"))
     cache_file: Path = field(default_factory=lambda: Path("data/link_cache.json"))
     rate_limit_video: float = 1.0
@@ -163,7 +163,7 @@ def load_config(*, require_api_key: bool = True) -> Config:
         anthropic_api_key=api_key,
         twitter_webhook_token=os.environ.get("TWITTER_WEBHOOK_TOKEN"),
         output_dir=Path(
-            os.environ.get("TWITTER_OUTPUT_DIR", "/workspace/notes/twitter/")
+            os.environ.get("TWITTER_OUTPUT_DIR", "/workspace/notes/Sources/twitter/")
         ),
         state_file=Path(os.environ.get("TWITTER_STATE_FILE", "data/state.json")),
         cache_file=Path(os.environ.get("TWITTER_CACHE_FILE", "data/link_cache.json")),

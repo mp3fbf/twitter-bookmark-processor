@@ -7,6 +7,7 @@ aiohttp>=3.9.0             # Async HTTP server for webhook
 # LLM integration
 anthropic>=0.40.0          # Claude API
 google-genai>=1.0.0        # Gemini API (for YouTube processing)
+tiktoken>=0.7.0            # Token estimation for Stage 2 budget
 
 # Development
 pytest>=8.0.0              # Testing

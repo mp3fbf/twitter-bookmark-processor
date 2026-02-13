@@ -9,6 +9,9 @@ Transform Twitter/X bookmarks into structured Obsidian notes with automatic cont
 - **LLM Extraction**: Claude Haiku extracts TL;DR, key points, and tags from web links
 - **Obsidian Output**: Markdown with YAML frontmatter, tags, and backlinks
 - **Rate Limiting**: Built-in throttling for external APIs
+- **Insight Engine**: Two-stage AI pipeline (capture → distill) for richer notes
+- **X API Integration**: OAuth 2.0 PKCE for fetching bookmarks directly from X/Twitter
+- **Brain Sync**: Automatic sync to Obsidian vault via launchd + Syncthing
 - **Production Ready**: 630+ tests, structured logging, graceful shutdown
 
 ## Architecture
@@ -97,7 +100,7 @@ All configuration via environment variables. See [docs/configuration.md](docs/co
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | Claude API key for LLM extraction |
 | `TWITTER_WEBHOOK_TOKEN` | No | Bearer token for webhook auth (dev mode if unset) |
-| `TWITTER_OUTPUT_DIR` | No | Output directory (default: `/workspace/notes/twitter/`) |
+| `TWITTER_OUTPUT_DIR` | No | Output directory (default: `/workspace/notes/Sources/twitter/`) |
 
 ### Example .env
 
@@ -155,29 +158,33 @@ See [docs/ios-shortcut.md](docs/ios-shortcut.md) for iOS Shortcut setup.
 
 ### Brain Vault Sync (Obsidian)
 
-When the output directory is inside `~/brain/` (the Obsidian vault), `run-processor.sh` automatically calls `sync-brain.sh` after each processing cycle:
+Notes are written to `~/projects/notes/Sources/twitter/` and automatically synced to the Obsidian brain vault via a launchd job:
 
 ```
-Daemon processes bookmarks
-    │
-    ▼
-sync-brain.sh
-    ├── 1. Detect changes in Sources/twitter/
-    ├── 2. git commit + push → Gitea (Mac Mini)
-    └── 3. Tailscale SSH → MacBook: git pull --ff-only
-                                        │
-                                        ▼
-                                   Obsidian synced
+Container writes .md → /workspace/notes/Sources/twitter/
+                       (= ~/projects/notes/Sources/twitter/ on Mac Mini)
+                                    │
+                           launchd WatchPaths detects change
+                                    │
+                           sync-brain.sh (rsync)
+                                    │
+                           ~/brain/Sources/twitter/
+                                    │
+                           Syncthing distributes
+                                    │
+                           MacBook, iPhone, etc
 ```
 
-The MacBook pull is best-effort — if the MacBook is offline or unreachable, the script logs a warning and continues. Next time the MacBook comes online, a manual `cd ~/brain && git pull` catches up.
+**Setup (one-time):**
+```bash
+bash ~/projects/_inbox/install-sync-brain.sh
+```
 
-**Environment overrides:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TAILSCALE` | auto-detected | Path to `tailscale` CLI |
-| `MACBOOK_USER` | `robertocunha` | SSH username on MacBook |
+This installs `com.mp3fbf.sync-brain` launchd job that:
+- Watches `~/projects/notes/Sources/` for changes (event-driven)
+- Runs `sync-brain.sh` to rsync → `~/brain/Sources/`
+- Also runs every 15 min as safety net
+- Log: `/tmp/sync-brain.log`
 
 ### Option 3: macOS launchd
 
@@ -219,6 +226,37 @@ Load with:
 ```bash
 launchctl load ~/Library/LaunchAgents/com.user.twitter-processor.plist
 ```
+
+### Option 4: Insight Engine
+
+The Insight Engine is a two-stage pipeline that produces richer notes using AI distillation:
+
+1. **Capture**: Fetches tweet content, resolves links, analyzes images, downloads video transcripts
+2. **Distill**: LLM extracts structured insights with title, tags, value type, and original content
+
+```bash
+# Process new bookmarks through insight pipeline
+python3 -m src.main --insight
+
+# Limit to N bookmarks
+python3 -m src.main --insight --limit 10
+
+# Reprocess stage 2 (re-distill existing content packages)
+python3 -m src.main --reprocess-stage2
+
+# Retry bookmarks flagged for review
+python3 -m src.main --retry-reviews
+```
+
+**X API OAuth (required for fetching bookmarks):**
+```bash
+# One-time authorization
+python3 -m src.main --authorize
+
+# Tokens stored in data/x_api_tokens.json (refresh tokens last 6 months)
+```
+
+State is tracked in `data/insight_state.json`, separate from the legacy `data/state.json`.
 
 ## Troubleshooting
 
@@ -303,11 +341,13 @@ ruff format .
 twitter-bookmark-processor/
 ├── src/
 │   ├── core/           # Core modules (config, pipeline, state)
+│   ├── insight/        # Insight Engine (capture, distill, pipeline)
 │   ├── processors/     # Content type processors
 │   ├── output/         # Obsidian writer + templates
-│   ├── sources/        # Input readers (Twillot)
+│   ├── sources/        # Input readers (Twillot, X API)
 │   ├── main.py         # CLI entry point
 │   └── webhook_server.py
+├── deploy/             # launchd plists, sync scripts, run scripts
 ├── tests/              # 630+ test cases
 ├── docs/               # Documentation
 ├── data/               # Runtime data (state, cache, backlog)

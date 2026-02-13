@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -40,23 +41,21 @@ logger = get_logger(__name__)
 DEFAULT_POLL_INTERVAL = 120
 
 
-def sync_brain(output_dir: Path) -> None:
-    """Run sync-brain.sh if output dir is inside a Brain vault."""
-    output_str = str(output_dir)
-    if "/brain/" not in output_str:
-        return
-
+def sync_brain() -> None:
+    """Copy notes from projects → brain vault. No-op if ~/brain/ doesn't exist."""
     sync_script = Path(__file__).resolve().parent.parent / "deploy" / "sync-brain.sh"
     if not sync_script.exists():
         return
 
     try:
-        subprocess.run(
-            ["bash", str(sync_script), output_str],
+        result = subprocess.run(
+            ["bash", str(sync_script)],
             timeout=30,
             capture_output=True,
             text=True,
         )
+        if result.stdout.strip():
+            logger.info(result.stdout.strip())
     except Exception as e:
         logger.warning("Brain sync failed: %s", e)
 
@@ -253,7 +252,7 @@ async def run_daemon(
                         result.skipped,
                         result.failed,
                     )
-                    sync_brain(output_dir)
+                    sync_brain()
             except asyncio.CancelledError:
                 logger.info("Processing cycle cancelled")
                 break
@@ -292,17 +291,15 @@ async def run_daemon(
 async def _run_authorize(config: "Config") -> int:
     """Run the X API OAuth 2.0 authorization flow.
 
-    Starts a temporary HTTP server to capture the OAuth callback,
-    opens the browser automatically, and exchanges the code for tokens.
+    Starts a callback server on 0.0.0.0:8766 and prints the auth URL.
+    The user opens the URL in any browser, approves, and either:
+    - The callback server captures the redirect automatically, OR
+    - The user pastes the redirect URL if the callback didn't reach us.
 
-    Args:
-        config: Application configuration with X API settings.
-
-    Returns:
-        Exit code (0 for success, 1 for errors).
+    One-time operation. With offline.access, refresh tokens auto-rotate.
     """
-    import re
-    import webbrowser
+    from urllib.parse import parse_qs, urlparse
+
     from aiohttp import web
 
     from src.sources.x_api_auth import XApiAuth
@@ -318,61 +315,68 @@ async def _run_authorize(config: "Config") -> int:
 
     url, state = auth.get_authorization_url()
 
-    # Shared state between server and main flow
+    # Shared state between callback server and main flow
     captured_code: dict[str, str | None] = {"code": None, "error": None}
     code_received = asyncio.Event()
 
     async def callback_handler(request: web.Request) -> web.Response:
-        """Capture the OAuth callback and extract the authorization code."""
         error = request.query.get("error")
         if error:
-            desc = request.query.get("error_description", error)
-            captured_code["error"] = desc
+            captured_code["error"] = request.query.get("error_description", error)
             code_received.set()
             return web.Response(
-                text=f"<h2>Authorization failed</h2><p>{desc}</p>"
-                "<p>You can close this tab.</p>",
+                text="<h2>Authorization failed</h2><p>You can close this tab.</p>",
                 content_type="text/html",
             )
-
         code = request.query.get("code")
         if code:
             captured_code["code"] = code
             code_received.set()
             return web.Response(
                 text="<h2>Authorization successful!</h2>"
-                "<p>You can close this tab and return to the terminal.</p>",
+                "<p>You can close this tab.</p>",
                 content_type="text/html",
             )
-
         return web.Response(text="Missing code parameter", status=400)
 
-    # Start temporary callback server
+    # Start callback server on 0.0.0.0 (reachable from outside container)
     app = web.Application()
     app.router.add_get("/oauth/callback", callback_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", 8766)
+    site = web.TCPSite(runner, "0.0.0.0", 8766)
     await site.start()
 
     print("\n=== X API Authorization ===\n")
-    print("Opening browser for authorization...")
-    webbrowser.open(url)
-    print(f"\nIf the browser didn't open, visit:\n  {url}\n")
-    print("Waiting for callback...")
+    print("Open this URL in your browser:\n")
+    print(f"  {url}\n")
+    print("After approving, one of two things will happen:")
+    print("  1. The page loads 'Authorization successful' → done automatically")
+    print("  2. The page fails to load → copy the URL from your address bar\n")
+    print("Waiting for callback (or paste the redirect URL below)...\n")
+
+    # Race: callback server vs manual paste
+    async def wait_for_paste():
+        """Read pasted URL from stdin in a thread."""
+        loop = asyncio.get_event_loop()
+        pasted = await loop.run_in_executor(None, sys.stdin.readline)
+        pasted = pasted.strip()
+        if pasted and "code=" in pasted:
+            parsed = parse_qs(urlparse(pasted).query)
+            if "code" in parsed:
+                captured_code["code"] = parsed["code"][0]
+                code_received.set()
+
+    paste_task = asyncio.create_task(wait_for_paste())
 
     try:
-        # Wait for callback (timeout 5 minutes)
         await asyncio.wait_for(code_received.wait(), timeout=300)
     except asyncio.TimeoutError:
-        print("\nTimeout waiting for authorization (5 minutes).", file=sys.stderr)
-        await runner.cleanup()
-        return 1
-    except KeyboardInterrupt:
-        print("\nAuthorization cancelled.")
+        print("\nTimeout (5 min). Run --authorize again.", file=sys.stderr)
         await runner.cleanup()
         return 1
 
+    paste_task.cancel()
     await runner.cleanup()
 
     if captured_code["error"]:
@@ -388,7 +392,9 @@ async def _run_authorize(config: "Config") -> int:
         tokens = await auth.exchange_code(code)
         print("\nAuthorization successful!")
         print(f"Tokens saved to: {auth.token_file}")
-        print(f"Access token expires in: {int(tokens.expires_at - __import__('time').time())}s")
+        print(f"Scopes: {tokens.scope}")
+        print(f"Access token expires in: {int(tokens.expires_at - time.time())}s")
+        print("Refresh token will auto-rotate on each use (valid 6 months).")
         return 0
     except Exception as e:
         print(f"\nToken exchange failed: {e}", file=sys.stderr)
@@ -466,6 +472,33 @@ def create_argument_parser() -> argparse.ArgumentParser:
         help="Clear ERROR entries from state so they get reprocessed on next run",
     )
 
+    # Insight Engine flags
+    parser.add_argument(
+        "--insight",
+        action="store_true",
+        help="Use Insight Engine pipeline (capture → distill → write)",
+    )
+
+    parser.add_argument(
+        "--reprocess-stage2",
+        action="store_true",
+        help="Re-run distillation on existing content packages (Insight Engine)",
+    )
+
+    parser.add_argument(
+        "--retry-reviews",
+        action="store_true",
+        help="Re-process bookmarks flagged needs_review (Insight Engine)",
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit number of bookmarks to process (for testing)",
+    )
+
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
@@ -473,6 +506,147 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int:
+    """Run Insight Engine pipeline modes.
+
+    Handles --insight, --reprocess-stage2, and --retry-reviews.
+    """
+    from src.insight.pipeline import InsightPipeline
+
+    # Optional X API auth
+    x_api_auth = None
+    if config.x_api_client_id:
+        try:
+            from src.sources.x_api_auth import XApiAuth
+            auth = XApiAuth(
+                client_id=config.x_api_client_id,
+                token_file=config.x_api_token_file,
+            )
+            if auth.has_tokens():
+                x_api_auth = auth
+        except Exception:
+            pass
+
+    pipeline = InsightPipeline(
+        output_dir=config.output_dir,
+        x_api_auth=x_api_auth,
+    )
+
+    # --retry-reviews: re-process bookmarks flagged needs_review
+    if parsed_args.retry_reviews:
+        results = await pipeline.retry_reviews()
+        if not results:
+            print("No bookmarks flagged for review")
+        else:
+            for bid, status in results.items():
+                print(f"  {bid}: {status}")
+            success = sum(1 for s in results.values() if s == "success")
+            print(f"\nRetried {len(results)}: {success} success, {len(results) - success} failed")
+            if success > 0:
+                sync_brain()
+        return 0
+
+    # --reprocess-stage2: re-run distillation on all content packages
+    if parsed_args.reprocess_stage2:
+        from src.insight.capture import PACKAGES_DIR
+        packages = list(PACKAGES_DIR.glob("*.json"))
+        limit = parsed_args.limit or len(packages)
+        packages = packages[:limit]
+        print(f"Reprocessing Stage 2 for {len(packages)} packages...")
+
+        success = 0
+        for pkg_path in packages:
+            bid = pkg_path.stem
+            note = await pipeline.reprocess_stage2(bid)
+            if note:
+                success += 1
+                print(f"  ✓ {bid} [{note.value_type.value}]")
+            else:
+                print(f"  ✗ {bid}")
+
+        print(f"\nReprocessed: {success}/{len(packages)}")
+        if success > 0:
+            sync_brain()
+        return 0
+
+    # --insight: process bookmarks through insight pipeline
+    # Source bookmarks the same way as legacy pipeline
+    source = parsed_args.source or config.bookmark_source
+    bookmarks: list = []
+
+    if source in ("x_api", "both") and x_api_auth:
+        from src.sources.x_api_reader import XApiReader
+        reader = XApiReader(auth=x_api_auth, state_manager=StateManager(config.state_file))
+        bookmarks.extend(await reader.fetch_new_bookmarks())
+
+    if source in ("twillot", "both"):
+        from src.core.backlog_manager import BacklogManager
+        from src.core.watcher import DirectoryWatcher
+        backlog_dir = Path("data/backlog")
+        if backlog_dir.exists():
+            bm = BacklogManager(backlog_dir)
+            watcher = DirectoryWatcher(bm, StateManager(config.state_file))
+            for export_file in watcher.get_new_files():
+                from src.sources.twillot_reader import parse_twillot_export
+                bookmarks.extend(parse_twillot_export(export_file))
+
+    # Also allow processing bookmarks already in legacy state (for backfill)
+    if not bookmarks:
+        from src.core.bookmark import Bookmark, ProcessingStatus
+        legacy_state = StateManager(config.state_file)
+        legacy_state.load()
+        all_ids = legacy_state.get_all_processed_ids()
+        done_ids = [
+            bid for bid in all_ids
+            if legacy_state.get_status(bid) == ProcessingStatus.DONE
+        ]
+        # Filter out already-insight-processed
+        done_ids = [bid for bid in done_ids if not pipeline.state.is_done(bid)]
+
+        for bid in done_ids:
+            bookmarks.append(Bookmark(
+                id=bid,
+                url=f"https://x.com/i/status/{bid}",
+                text="",
+                author_username="unknown",
+            ))
+
+    limit = parsed_args.limit or len(bookmarks)
+    bookmarks = bookmarks[:limit]
+
+    logger.info("Insight pipeline: %d bookmarks to process", len(bookmarks))
+    print(f"Processing {len(bookmarks)} bookmarks through Insight Engine...")
+
+    processed = 0
+    skipped = 0
+    failed = 0
+
+    for bookmark in bookmarks:
+        note = await pipeline.process_bookmark(bookmark)
+        if note is None:
+            if pipeline.state.is_done(bookmark.id):
+                skipped += 1
+            else:
+                failed += 1
+        else:
+            processed += 1
+            print(f"  [{processed}] {bookmark.id} -> {note.value_type.value}: {note.title[:60]}")
+
+    print(f"\n=== Insight Engine Complete ===")
+    print(f"Processed: {processed}")
+    print(f"Skipped:   {skipped}")
+    print(f"Failed:    {failed}")
+
+    stats = pipeline.state.get_stats()
+    print(f"\nState: {stats}")
+
+    # Sync notes to brain vault (no-op inside container)
+    if processed > 0:
+        sync_brain()
+
+    return 0 if failed == 0 else 1
 
 
 def main(args: list[str] | None = None) -> int:
@@ -515,6 +689,10 @@ def main(args: list[str] | None = None) -> int:
         else:
             logger.info("No error entries to clear")
             print("No error entries to clear")
+
+    # ── Insight Engine modes ──────────────────────────────────────
+    if parsed_args.insight or parsed_args.reprocess_stage2 or parsed_args.retry_reviews:
+        return asyncio.run(_run_insight(parsed_args, config))
 
     # Default backlog directory (relative to workspace)
     backlog_dir = Path("data/backlog")

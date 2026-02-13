@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mp3fbf.sync-brain</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/roberto/projects/twitter-bookmark-processor/deploy/sync-brain.sh</string>
+    </array>
+
+    <!-- Event-driven: fires when any file changes in Sources/ -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/roberto/projects/notes/Sources</string>
+    </array>
+
+    <!-- Safety net: also run every 15 min in case WatchPaths misses something -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/sync-brain.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/sync-brain.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

@@ -59,12 +59,8 @@ if [[ -n "$X_API_CLIENT_ID" ]]; then
     log "X API Client ID loaded (${#X_API_CLIENT_ID} chars)"
 fi
 
-# Output directory
-if [[ -d "$HOME/brain/Sources" ]]; then
-    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/brain/Sources/twitter/}"
-else
-    export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/twitter/}"
-fi
+# Output directory — writes to projects, sync-brain.sh copies to ~/brain/
+export TWITTER_OUTPUT_DIR="${TWITTER_OUTPUT_DIR:-$HOME/projects/notes/Sources/twitter/}"
 
 log "Starting twitter-processor daemon..."
 log "Output dir: $TWITTER_OUTPUT_DIR"
@@ -77,10 +73,10 @@ cd "$PROJECT_DIR"
 "$VENV_PYTHON" -m src.main "$@"
 EXIT_CODE=$?
 
-# Sync brain vault if output dir is inside brain
+# Copy notes from projects → brain (exits silently if ~/brain/ doesn't exist)
 SYNC_SCRIPT="$SCRIPT_DIR/sync-brain.sh"
-if [[ "$TWITTER_OUTPUT_DIR" == *"/brain/"* ]] && [[ -f "$SYNC_SCRIPT" ]]; then
-    bash "$SYNC_SCRIPT" "$TWITTER_OUTPUT_DIR"
+if [[ -f "$SYNC_SCRIPT" ]]; then
+    bash "$SYNC_SCRIPT"
 fi
 
 exit $EXIT_CODE
