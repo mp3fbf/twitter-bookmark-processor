@@ -8,13 +8,13 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/roberto/projects/twitter-bookmark-processor/deploy/sync-brain.sh</string>
+        <string>/workspace/twitter-bookmark-processor/deploy/sync-brain.sh</string>
     </array>
 
     <!-- Event-driven: fires when any file changes in Sources/ -->
     <key>WatchPaths</key>
     <array>
-        <string>/Users/roberto/projects/notes/Sources</string>
+        <string>__NOTES_SOURCES__</string>
     </array>
 
     <!-- Safety net: also run every 15 min in case WatchPaths misses something -->

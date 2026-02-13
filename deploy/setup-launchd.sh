@@ -119,6 +119,34 @@ install_plist() {
 install_plist "$SCRIPT_DIR/com.mp3fbf.twitter-processor.plist" "com.mp3fbf.twitter-processor"
 install_plist "$SCRIPT_DIR/com.mp3fbf.twitter-webhook.plist" "com.mp3fbf.twitter-webhook"
 
+# sync-brain: needs NOTES_SOURCES path substituted too
+NOTES_SOURCES="$(dirname "$PROJECT_DIR")/notes/Sources"
+mkdir -p "$NOTES_SOURCES"
+SYNC_BRAIN_SRC="$SCRIPT_DIR/com.mp3fbf.sync-brain.plist"
+SYNC_BRAIN_LABEL="com.mp3fbf.sync-brain"
+SYNC_BRAIN_DEST="$LAUNCH_AGENTS/$SYNC_BRAIN_LABEL.plist"
+
+if [[ -f "$SYNC_BRAIN_SRC" ]]; then
+    if launchctl list 2>/dev/null | grep -q "$SYNC_BRAIN_LABEL"; then
+        launchctl stop "$SYNC_BRAIN_LABEL" 2>/dev/null || true
+        launchctl unload "$SYNC_BRAIN_DEST" 2>/dev/null || true
+    fi
+
+    sed \
+        -e "s|/workspace/twitter-bookmark-processor|$PROJECT_DIR|g" \
+        -e "s|__NOTES_SOURCES__|$NOTES_SOURCES|g" \
+        "$SYNC_BRAIN_SRC" > "$SYNC_BRAIN_DEST"
+
+    launchctl load "$SYNC_BRAIN_DEST"
+    sleep 1
+
+    if launchctl list 2>/dev/null | grep -q "$SYNC_BRAIN_LABEL"; then
+        info "$SYNC_BRAIN_LABEL loaded and running"
+    else
+        warn "$SYNC_BRAIN_LABEL loaded but may not be running yet (check logs)"
+    fi
+fi
+
 # --- Step 5: Summary ---
 echo ""
 echo "=== Setup Complete ==="
@@ -126,6 +154,7 @@ echo ""
 echo "Services installed:"
 echo "  - com.mp3fbf.twitter-processor (daemon, polls X API every 15min)"
 echo "  - com.mp3fbf.twitter-webhook   (HTTP server on port 8766)"
+echo "  - com.mp3fbf.sync-brain        (WatchPaths + every 15min → ~/brain/)"
 echo ""
 echo "Logs:"
 echo "  tail -f /tmp/twitter-processor.log"
