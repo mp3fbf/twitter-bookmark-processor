@@ -288,6 +288,138 @@ async def run_daemon(
         logger.info("Daemon shutdown complete")
 
 
+async def run_insight_daemon(
+    backlog_dir: Path,
+    config: "Config",
+    source: str = "both",
+    poll_interval: int = 900,
+) -> None:
+    """Run Insight Engine as a daemon, polling every poll_interval seconds.
+
+    Same structure as run_daemon() but processes through InsightPipeline.
+    """
+    from src.insight.pipeline import InsightPipeline
+
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+
+    loop = asyncio.get_running_loop()
+
+    def signal_handler(sig: int) -> None:
+        logger.info("Received signal %s, initiating graceful shutdown...", sig)
+        if _shutdown_event:
+            _shutdown_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+        except NotImplementedError:
+            signal.signal(sig, lambda s, f: signal_handler(s))
+
+    # Set up X API auth
+    x_api_auth = None
+    if config.x_api_client_id:
+        try:
+            from src.sources.x_api_auth import XApiAuth
+            auth = XApiAuth(
+                client_id=config.x_api_client_id,
+                token_file=config.x_api_token_file,
+            )
+            if auth.has_tokens():
+                x_api_auth = auth
+                logger.info("X API auth ready")
+        except Exception as e:
+            logger.warning("X API auth not available: %s", e)
+
+    pipeline = InsightPipeline(
+        output_dir=config.output_dir,
+        x_api_auth=x_api_auth,
+    )
+
+    logger.info("Starting Insight Engine daemon (poll interval: %ds)", poll_interval)
+    current_task: asyncio.Task | None = None
+
+    try:
+        while not _shutdown_event.is_set():
+            async def _insight_cycle():
+                bookmarks: list = []
+
+                # Fetch from X API
+                if source in ("x_api", "both") and x_api_auth:
+                    from src.sources.x_api_reader import XApiReader
+                    reader = XApiReader(
+                        auth=x_api_auth,
+                        state_manager=StateManager(config.state_file),
+                    )
+                    bookmarks.extend(await reader.fetch_new_bookmarks())
+
+                # Fetch from Twillot backlog
+                if source in ("twillot", "both") and backlog_dir.exists():
+                    from src.core.backlog_manager import BacklogManager
+                    from src.core.watcher import DirectoryWatcher
+                    from src.sources.twillot_reader import parse_twillot_export
+
+                    bm = BacklogManager(backlog_dir)
+                    state_manager = StateManager(config.state_file)
+                    watcher = DirectoryWatcher(bm, state_manager)
+
+                    for export_file in watcher.get_new_files():
+                        bookmarks.extend(parse_twillot_export(export_file))
+                        bm.archive_file(export_file)
+                        watcher.mark_file_processed(export_file)
+
+                if not bookmarks:
+                    return 0
+
+                logger.info("Insight cycle: %d bookmarks to process", len(bookmarks))
+                processed = 0
+                for bookmark in bookmarks:
+                    note = await pipeline.process_bookmark(bookmark)
+                    if note:
+                        processed += 1
+                        logger.info(
+                            "  %s -> %s: %s",
+                            bookmark.id, note.value_type.value, note.title[:60],
+                        )
+                return processed
+
+            current_task = asyncio.create_task(_insight_cycle())
+
+            try:
+                processed = await current_task
+                current_task = None
+                if processed > 0:
+                    logger.info("Cycle complete: %d notes written", processed)
+                    sync_brain()
+            except asyncio.CancelledError:
+                logger.info("Processing cycle cancelled")
+                break
+
+            # Wait for next poll or shutdown
+            try:
+                await asyncio.wait_for(
+                    _shutdown_event.wait(),
+                    timeout=poll_interval,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    finally:
+        if current_task and not current_task.done():
+            logger.info("Waiting for in-progress job to complete...")
+            try:
+                await asyncio.wait_for(current_task, timeout=30)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                current_task.cancel()
+                try:
+                    await current_task
+                except asyncio.CancelledError:
+                    pass
+
+        logger.info("Insight Engine daemon shutdown complete")
+
+
 async def _run_authorize(config: "Config") -> int:
     """Run the X API OAuth 2.0 authorization flow.
 
@@ -691,8 +823,27 @@ def main(args: list[str] | None = None) -> int:
             print("No error entries to clear")
 
     # ── Insight Engine modes ──────────────────────────────────────
-    if parsed_args.insight or parsed_args.reprocess_stage2 or parsed_args.retry_reviews:
+    if parsed_args.reprocess_stage2 or parsed_args.retry_reviews:
         return asyncio.run(_run_insight(parsed_args, config))
+
+    if parsed_args.insight:
+        if parsed_args.once:
+            return asyncio.run(_run_insight(parsed_args, config))
+        # Daemon mode with Insight Engine
+        source = parsed_args.source or config.bookmark_source
+        logger.info("Running Insight Engine daemon (source: %s)", source)
+        try:
+            asyncio.run(
+                run_insight_daemon(
+                    backlog_dir=Path("data/backlog"),
+                    config=config,
+                    source=source,
+                )
+            )
+            return 0
+        except KeyboardInterrupt:
+            logger.info("Interrupted during startup")
+            return 0
 
     # Default backlog directory (relative to workspace)
     backlog_dir = Path("data/backlog")

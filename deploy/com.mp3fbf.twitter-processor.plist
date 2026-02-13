@@ -1,37 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Twitter Bookmark Processor - Daemon Mode (Polling)
+  Twitter Bookmark Processor - Insight Engine Daemon
 
-  This plist runs the processor in daemon mode, polling data/backlog/
-  every 2 minutes for new Twillot export files.
+  Polls X API + Twillot backlog every 15 min, processes through
+  Insight Engine (capture + Opus distill), writes Obsidian notes.
 
   Installation:
-    1. Run ./setup-macos.sh to install (auto-configures paths)
-    2. Or manually: chmod +x deploy/run-processor.sh && cp deploy/*.plist ~/Library/LaunchAgents/
-    3. launchctl load ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist
-
-  API Key:
-    The wrapper script fetches ANTHROPIC_API_KEY from 1Password at runtime.
-    Requires: op CLI authenticated (service account or biometric)
-
-  Management:
-    launchctl list | grep twitter        # Check if running
-    launchctl stop com.mp3fbf.twitter-processor   # Stop daemon
-    launchctl start com.mp3fbf.twitter-processor  # Start daemon
-    launchctl unload ~/Library/LaunchAgents/com.mp3fbf.twitter-processor.plist  # Remove
+    bash deploy/setup-launchd.sh
 
   Logs:
-    tail -f /tmp/twitter-processor.log   # stdout
-    tail -f /tmp/twitter-processor.err   # stderr
+    tail -f /tmp/twitter-processor.log
+    tail -f /tmp/twitter-processor.err
 -->
 <plist version="1.0">
 <dict>
-    <!-- Unique service identifier -->
     <key>Label</key>
     <string>com.mp3fbf.twitter-processor</string>
 
-    <!-- Program to execute (wrapper script fetches API key from 1Password) -->
     <key>ProgramArguments</key>
     <array>
         <string>/workspace/twitter-bookmark-processor/deploy/run-processor.sh</string>
@@ -40,14 +26,9 @@
         <string>both</string>
     </array>
 
-    <!-- Working directory (where src/ is located) -->
     <key>WorkingDirectory</key>
-    <!-- TODO: Update to your project directory -->
     <string>/workspace/twitter-bookmark-processor</string>
 
-    <!-- Environment variables -->
-    <!-- Note: Wrapper script loads OP token from ~/.secrets/op-token-yolo -->
-    <!-- Note: API keys are fetched from 1Password at runtime -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>TWITTER_OUTPUT_DIR</key>
@@ -57,24 +38,23 @@
         <string>INFO</string>
     </dict>
 
-    <!-- Run once at load, then every 15 minutes -->
     <key>RunAtLoad</key>
     <true/>
 
-    <key>StartInterval</key>
-    <integer>900</integer>
+    <key>KeepAlive</key>
+    <true/>
 
-    <!-- Log output -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
     <key>StandardOutPath</key>
     <string>/tmp/twitter-processor.log</string>
     <key>StandardErrorPath</key>
     <string>/tmp/twitter-processor.err</string>
 
-    <!-- Nice level (lower priority, be gentle on system) -->
     <key>Nice</key>
     <integer>5</integer>
 
-    <!-- Process type (background = low priority) -->
     <key>ProcessType</key>
     <string>Background</string>
 </dict>
