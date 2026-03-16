@@ -1,6 +1,6 @@
 """Main Entry Point for Twitter Bookmark Processor.
 
-Processes Twitter/X bookmarks from Twillot exports into Obsidian notes.
+Processes Twitter/X bookmarks into Obsidian notes via the Insight Engine.
 
 Usage:
     python -m src.main --webhook             # Run as HTTP webhook server on port 8766
@@ -9,6 +9,7 @@ Usage:
     python -m src.main --source x_api --once # Fetch from X API once
     python -m src.main --source both         # Daemon: watch backlog + poll X API
     python -m src.main --authorize           # Run X API OAuth authorization flow
+    python -m src.main --capture-only --once # Capture content only (no API key needed)
     python -m src.main                       # Run as daemon (polling mode)
     python -m src.main --verbose             # Enable debug logging
 """
@@ -119,7 +120,7 @@ async def run_once(
     through the pipeline, and archives processed files.
 
     Args:
-        backlog_dir: Directory containing Twillot export files.
+        backlog_dir: Directory containing bookmark export files.
         output_dir: Directory for generated Obsidian notes.
         state_file: Path to JSON state persistence file.
 
@@ -170,7 +171,7 @@ async def run_daemon(
     output_dir: Path,
     state_file: Path,
     poll_interval: int = DEFAULT_POLL_INTERVAL,
-    source: str = "twillot",
+    source: str = "backlog",
     config: "Config | None" = None,
 ) -> None:
     """Run as a daemon, continuously polling for new files and/or X API.
@@ -179,11 +180,11 @@ async def run_daemon(
     Handles SIGTERM/SIGINT for graceful shutdown.
 
     Args:
-        backlog_dir: Directory containing Twillot export files.
+        backlog_dir: Directory containing bookmark export files.
         output_dir: Directory for generated Obsidian notes.
         state_file: Path to JSON state persistence file.
         poll_interval: Seconds between polling (default: 120).
-        source: Bookmark source ("twillot", "x_api", "both").
+        source: Bookmark source ("backlog", "x_api", "both").
         config: Application configuration (required for x_api source).
     """
     global _shutdown_event
@@ -215,7 +216,7 @@ async def run_daemon(
             # Run one processing cycle
             async def _cycle():
                 total = PipelineResult()
-                if source in ("twillot", "both"):
+                if source in ("backlog", "both"):
                     r = await run_once(
                         backlog_dir=backlog_dir,
                         output_dir=output_dir,
@@ -316,18 +317,39 @@ async def run_insight_daemon(
         except NotImplementedError:
             signal.signal(sig, lambda s, f: signal_handler(s))
 
-    # Set up X API auth
+    # Set up X API auth with smoke test
     x_api_auth = None
     if config.x_api_client_id:
         try:
             from src.sources.x_api_auth import XApiAuth
+            from src.core.notifier import notify as _notify
             auth = XApiAuth(
                 client_id=config.x_api_client_id,
                 token_file=config.x_api_token_file,
             )
             if auth.has_tokens():
-                x_api_auth = auth
-                logger.info("X API auth ready")
+                # Smoke test: verify token actually works
+                try:
+                    token = await auth.get_valid_token()
+                    x_api_auth = auth
+                    logger.info("X API auth ready (token valid)")
+                except RuntimeError as e:
+                    # Token expired — try explicit refresh
+                    logger.warning("X API token expired, attempting refresh...")
+                    try:
+                        await auth.refresh_tokens()
+                        x_api_auth = auth
+                        logger.info("X API auth recovered after refresh")
+                    except Exception as refresh_err:
+                        logger.error("X API auth refresh failed: %s", refresh_err)
+                        _notify(
+                            f"X API auth failed on startup: {refresh_err}. "
+                            "Pipeline running without enrichment.",
+                            "error",
+                        )
+                        # Continue without auth — graceful degradation
+            else:
+                logger.warning("No X API tokens found")
         except Exception as e:
             logger.warning("X API auth not available: %s", e)
 
@@ -342,6 +364,9 @@ async def run_insight_daemon(
     try:
         while not _shutdown_event.is_set():
             async def _insight_cycle():
+                # Check auth health once per cycle
+                await pipeline.check_auth_health()
+
                 bookmarks: list = []
 
                 # Fetch from X API
@@ -353,18 +378,18 @@ async def run_insight_daemon(
                     )
                     bookmarks.extend(await reader.fetch_new_bookmarks())
 
-                # Fetch from Twillot backlog
-                if source in ("twillot", "both") and backlog_dir.exists():
+                # Fetch from backlog
+                if source in ("backlog", "both") and backlog_dir.exists():
                     from src.core.backlog_manager import BacklogManager
                     from src.core.watcher import DirectoryWatcher
-                    from src.sources.twillot_reader import parse_twillot_export
+                    from src.sources.bookmark_reader import parse_bookmark_export
 
                     bm = BacklogManager(backlog_dir)
                     state_manager = StateManager(config.state_file)
                     watcher = DirectoryWatcher(bm, state_manager)
 
                     for export_file in watcher.get_new_files():
-                        bookmarks.extend(parse_twillot_export(export_file))
+                        bookmarks.extend(parse_bookmark_export(export_file))
                         bm.archive_file(export_file)
                         watcher.mark_file_processed(export_file)
 
@@ -560,7 +585,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="twitter-bookmark-processor",
-        description="Process Twitter/X bookmarks from Twillot exports into Obsidian notes.",
+        description="Process Twitter/X bookmarks into Obsidian notes.",
         epilog="By default, runs as a daemon polling for new exports every 2 minutes.",
     )
 
@@ -586,10 +611,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--source",
-        choices=["twillot", "x_api", "both"],
+        choices=["backlog", "x_api", "both"],
         default=None,
         metavar="SOURCE",
-        help="Bookmark source: twillot, x_api, or both (default: from config)",
+        help="Bookmark source: backlog, x_api, or both (default: from config)",
     )
 
     parser.add_argument(
@@ -609,6 +634,12 @@ def create_argument_parser() -> argparse.ArgumentParser:
         "--insight",
         action="store_true",
         help="Use Insight Engine pipeline (capture → distill → write)",
+    )
+
+    parser.add_argument(
+        "--capture-only",
+        action="store_true",
+        help="Run only Stage 1 (content capture), skip distillation. No API key needed.",
     )
 
     parser.add_argument(
@@ -640,14 +671,15 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int:
-    """Run Insight Engine pipeline modes.
+async def _run_capture_only(parsed_args: argparse.Namespace, config: "Config") -> int:
+    """Run Stage 1 (capture) only — no API key needed.
 
-    Handles --insight, --reprocess-stage2, and --retry-reviews.
+    Fetches content for bookmarks and saves ContentPackages to disk.
+    Distillation is skipped entirely.
     """
     from src.insight.pipeline import InsightPipeline
 
-    # Optional X API auth
+    # X API auth with smoke test (for enriching thin bookmarks)
     x_api_auth = None
     if config.x_api_client_id:
         try:
@@ -657,7 +689,110 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
                 token_file=config.x_api_token_file,
             )
             if auth.has_tokens():
-                x_api_auth = auth
+                try:
+                    await auth.get_valid_token()
+                    x_api_auth = auth
+                except RuntimeError:
+                    try:
+                        await auth.refresh_tokens()
+                        x_api_auth = auth
+                    except Exception as e:
+                        logger.warning("X API auth unavailable: %s", e)
+        except Exception:
+            pass
+
+    pipeline = InsightPipeline(
+        output_dir=config.output_dir,
+        x_api_auth=x_api_auth,
+        capture_only=True,
+    )
+
+    # Source bookmarks
+    source = parsed_args.source or config.bookmark_source
+    bookmarks: list = []
+
+    if source in ("x_api", "both") and x_api_auth:
+        from src.sources.x_api_reader import XApiReader
+        reader = XApiReader(auth=x_api_auth, state_manager=StateManager(config.state_file))
+        bookmarks.extend(await reader.fetch_new_bookmarks())
+
+    if source in ("backlog", "both"):
+        from src.core.backlog_manager import BacklogManager
+        from src.core.watcher import DirectoryWatcher
+        backlog_dir = Path("data/backlog")
+        if backlog_dir.exists():
+            bm = BacklogManager(backlog_dir)
+            watcher = DirectoryWatcher(bm, StateManager(config.state_file))
+            for export_file in watcher.get_new_files():
+                from src.sources.bookmark_reader import parse_bookmark_export
+                bookmarks.extend(parse_bookmark_export(export_file))
+
+    # Filter out already-captured
+    bookmarks = [b for b in bookmarks if not pipeline.state.is_capture_done(b.id)]
+
+    limit = parsed_args.limit or len(bookmarks)
+    bookmarks = bookmarks[:limit]
+
+    logger.info("Capture-only: %d bookmarks to capture", len(bookmarks))
+    print(f"Capturing content for {len(bookmarks)} bookmarks (no distill)...")
+
+    captured = 0
+    failed = 0
+
+    for bookmark in bookmarks:
+        ok = await pipeline.capture_bookmark(bookmark)
+        if ok:
+            captured += 1
+            print(f"  [{captured}] {bookmark.id} captured")
+        else:
+            failed += 1
+            print(f"  [FAIL] {bookmark.id}")
+
+    print(f"\n=== Capture Complete ===")
+    print(f"Captured: {captured}")
+    print(f"Failed:   {failed}")
+    print(f"Skipped:  {len(bookmarks) - captured - failed}")
+
+    stats = pipeline.state.get_stats()
+    print(f"\nState: {stats}")
+
+    return 0 if failed == 0 else 1
+
+
+async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int:
+    """Run Insight Engine pipeline modes.
+
+    Handles --insight, --reprocess-stage2, and --retry-reviews.
+    """
+    from src.insight.pipeline import InsightPipeline
+
+    # X API auth with smoke test
+    x_api_auth = None
+    if config.x_api_client_id:
+        try:
+            from src.sources.x_api_auth import XApiAuth
+            from src.core.notifier import notify as _notify
+            auth = XApiAuth(
+                client_id=config.x_api_client_id,
+                token_file=config.x_api_token_file,
+            )
+            if auth.has_tokens():
+                try:
+                    token = await auth.get_valid_token()
+                    x_api_auth = auth
+                    logger.info("X API auth ready")
+                except RuntimeError:
+                    logger.warning("X API token expired, attempting refresh...")
+                    try:
+                        await auth.refresh_tokens()
+                        x_api_auth = auth
+                        logger.info("X API auth recovered after refresh")
+                    except Exception as e:
+                        logger.error("X API auth refresh failed: %s", e)
+                        _notify(
+                            f"X API auth failed: {e}. Running without enrichment.",
+                            "error",
+                        )
         except Exception:
             pass
 
@@ -713,7 +848,7 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
         reader = XApiReader(auth=x_api_auth, state_manager=StateManager(config.state_file))
         bookmarks.extend(await reader.fetch_new_bookmarks())
 
-    if source in ("twillot", "both"):
+    if source in ("backlog", "both"):
         from src.core.backlog_manager import BacklogManager
         from src.core.watcher import DirectoryWatcher
         backlog_dir = Path("data/backlog")
@@ -721,8 +856,8 @@ async def _run_insight(parsed_args: argparse.Namespace, config: "Config") -> int
             bm = BacklogManager(backlog_dir)
             watcher = DirectoryWatcher(bm, StateManager(config.state_file))
             for export_file in watcher.get_new_files():
-                from src.sources.twillot_reader import parse_twillot_export
-                bookmarks.extend(parse_twillot_export(export_file))
+                from src.sources.bookmark_reader import parse_bookmark_export
+                bookmarks.extend(parse_bookmark_export(export_file))
 
     # Also allow processing bookmarks already in legacy state (for backfill)
     if not bookmarks:
@@ -793,8 +928,8 @@ def main(args: list[str] | None = None) -> int:
     parser = create_argument_parser()
     parsed_args = parser.parse_args(args)
 
-    # --authorize doesn't need ANTHROPIC_API_KEY, only X API credentials
-    require_api_key = not parsed_args.authorize
+    # --authorize and --capture-only don't need ANTHROPIC_API_KEY
+    require_api_key = not (parsed_args.authorize or parsed_args.capture_only)
 
     # Load config and setup logging
     try:
@@ -823,6 +958,9 @@ def main(args: list[str] | None = None) -> int:
             print("No error entries to clear")
 
     # ── Insight Engine modes ──────────────────────────────────────
+    if parsed_args.capture_only:
+        return asyncio.run(_run_capture_only(parsed_args, config))
+
     if parsed_args.reprocess_stage2 or parsed_args.retry_reviews:
         return asyncio.run(_run_insight(parsed_args, config))
 
@@ -874,7 +1012,7 @@ def main(args: list[str] | None = None) -> int:
 
         async def _once():
             results = []
-            if source in ("twillot", "both"):
+            if source in ("backlog", "both"):
                 results.append(
                     await run_once(
                         backlog_dir=backlog_dir,

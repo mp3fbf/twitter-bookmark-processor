@@ -93,6 +93,29 @@ class ContentCapture:
         self._vision = vision_provider
         self._x_api_auth = x_api_auth
         self._bearer_token = bearer_token
+        self._auth_degraded = False
+
+    async def check_auth_health(self) -> bool:
+        """Test X API auth and set degradation flag.
+
+        Returns True if auth is healthy, False if degraded.
+        Should be called once per pipeline cycle, not per bookmark.
+        """
+        if not self._x_api_auth:
+            return True  # No auth configured — not degraded, just absent
+
+        try:
+            await self._x_api_auth.get_valid_token()
+            self._auth_degraded = False
+            return True
+        except Exception as e:
+            logger.warning("X API auth health check failed: %s", e)
+            self._auth_degraded = True
+            return False
+
+    @property
+    def auth_degraded(self) -> bool:
+        return self._auth_degraded
 
     async def capture(self, bookmark: "Bookmark") -> ContentPackage:
         """Capture all content for a bookmark into a ContentPackage.

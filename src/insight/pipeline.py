@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Optional
 
 from src.core.content_fetcher import AsyncContentFetcher
 from src.core.llm_factory import AnthropicProvider
+from src.core.notifier import notify
 from src.core.rate_limiter import RateConfig, RateLimiter, RateType
 from src.core.state_manager import StateManager
 from src.insight.capture import ContentCapture
@@ -138,16 +139,18 @@ class InsightPipeline:
         state_file: Path = DEFAULT_STATE_FILE,
         x_api_auth: Optional["XApiAuth"] = None,
         api_key: str | None = None,
+        capture_only: bool = False,
     ):
         self._output_dir = output_dir
         self._state = InsightState(state_file)
+        self._capture_only = capture_only
 
-        # API key
+        # API key (not required for capture-only mode)
         self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
 
-        # Vision provider (Haiku for image analysis)
+        # Vision provider (Haiku for image analysis — skip in capture-only)
         vision_provider = None
-        if self._api_key:
+        if self._api_key and not capture_only:
             try:
                 vision_provider = AnthropicProvider(
                     api_key=self._api_key,
@@ -163,8 +166,10 @@ class InsightPipeline:
             x_api_auth=x_api_auth,
         )
 
-        # Stage 2: Insight Distillation
-        self._distill = InsightDistiller(api_key=self._api_key)
+        # Stage 2: Insight Distillation (skip in capture-only mode)
+        self._distill = None
+        if not capture_only:
+            self._distill = InsightDistiller(api_key=self._api_key)
 
         # Rate limiter for multi-model
         self._rate_limiter = RateLimiter({
@@ -181,6 +186,26 @@ class InsightPipeline:
             from src.insight.writer import InsightWriter
             self._writer = InsightWriter(self._output_dir)
         return self._writer
+
+    async def check_auth_health(self) -> bool:
+        """Check X API auth health and notify on degradation.
+
+        Should be called once per pipeline cycle. Sends Telegram alert
+        if auth is degraded (once, not per bookmark).
+        """
+        healthy = await self._capture.check_auth_health()
+        if not healthy:
+            logger.warning("X API auth degraded — pipeline running without enrichment")
+            notify(
+                "X API auth degraded — pipeline running without thread/author enrichment. "
+                "Run keepalive_token.py to fix.",
+                "error",
+            )
+        return healthy
+
+    @property
+    def capture(self) -> ContentCapture:
+        return self._capture
 
     async def process_bookmark(self, bookmark: "Bookmark") -> InsightNote | None:
         """Process a single bookmark through the insight pipeline.
@@ -230,6 +255,27 @@ class InsightPipeline:
             logger.error("Pipeline failed for %s: %s", bid, e, exc_info=True)
             self._state.mark_error(bid, str(e))
             return None
+
+    async def capture_bookmark(self, bookmark: "Bookmark") -> bool:
+        """Run only Stage 1 (capture) for a bookmark, skipping distill.
+
+        Returns True if capture succeeded, False otherwise.
+        """
+        bid = bookmark.id
+
+        if self._state.is_capture_done(bid):
+            logger.debug("Skipping %s — capture already done", bid)
+            return True
+
+        try:
+            await self._capture.capture(bookmark)
+            self._state.mark_capture_done(bid)
+            logger.info("Captured %s", bid)
+            return True
+        except Exception as e:
+            logger.error("Capture failed for %s: %s", bid, e, exc_info=True)
+            self._state.mark_error(bid, str(e), needs_review=False)
+            return False
 
     async def reprocess_stage2(self, bookmark_id: str) -> InsightNote | None:
         """Re-run distillation on an existing content package.

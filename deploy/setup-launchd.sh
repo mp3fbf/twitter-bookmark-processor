@@ -119,6 +119,32 @@ install_plist() {
 install_plist "$SCRIPT_DIR/com.mp3fbf.twitter-processor.plist" "com.mp3fbf.twitter-processor"
 install_plist "$SCRIPT_DIR/com.mp3fbf.twitter-webhook.plist" "com.mp3fbf.twitter-webhook"
 
+# Token keepalive: substitute __VENV_PYTHON__ and __PROJECT_DIR__
+KEEPALIVE_SRC="$SCRIPT_DIR/com.mp3fbf.twitter-keepalive.plist"
+KEEPALIVE_LABEL="com.mp3fbf.twitter-keepalive"
+KEEPALIVE_DEST="$LAUNCH_AGENTS/$KEEPALIVE_LABEL.plist"
+
+if [[ -f "$KEEPALIVE_SRC" ]]; then
+    if launchctl list 2>/dev/null | grep -q "$KEEPALIVE_LABEL"; then
+        launchctl stop "$KEEPALIVE_LABEL" 2>/dev/null || true
+        launchctl unload "$KEEPALIVE_DEST" 2>/dev/null || true
+    fi
+
+    sed \
+        -e "s|__VENV_PYTHON__|$VENV_DIR/bin/python|g" \
+        -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+        "$KEEPALIVE_SRC" > "$KEEPALIVE_DEST"
+
+    launchctl load "$KEEPALIVE_DEST"
+    sleep 1
+
+    if launchctl list 2>/dev/null | grep -q "$KEEPALIVE_LABEL"; then
+        info "$KEEPALIVE_LABEL loaded and running"
+    else
+        warn "$KEEPALIVE_LABEL loaded but may not be running yet (check logs)"
+    fi
+fi
+
 # sync-brain: needs NOTES_SOURCES path substituted too
 NOTES_SOURCES="$(dirname "$PROJECT_DIR")/notes/Sources"
 mkdir -p "$NOTES_SOURCES"
@@ -154,6 +180,7 @@ echo ""
 echo "Services installed:"
 echo "  - com.mp3fbf.twitter-processor (daemon, polls X API every 15min)"
 echo "  - com.mp3fbf.twitter-webhook   (HTTP server on port 8766)"
+echo "  - com.mp3fbf.twitter-keepalive  (token refresh every 12h)"
 echo "  - com.mp3fbf.sync-brain        (WatchPaths + every 15min → ~/brain/)"
 echo ""
 echo "Logs:"
@@ -161,6 +188,7 @@ echo "  tail -f /tmp/twitter-processor.log"
 echo "  tail -f /tmp/twitter-processor.err"
 echo "  tail -f /tmp/twitter-webhook.log"
 echo "  tail -f /tmp/twitter-webhook.err"
+echo "  tail -f /tmp/twitter-keepalive.log"
 echo ""
 echo "Management:"
 echo "  launchctl stop com.mp3fbf.twitter-processor"
