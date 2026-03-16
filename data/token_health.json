@@ -1,0 +1,16 @@
+{
+  "current": {
+    "last_check": "2026-03-16T19:13:03.031405+00:00",
+    "status": "healthy",
+    "username": "mp3fbf",
+    "error": null
+  },
+  "history": [
+    {
+      "last_check": "2026-03-16T19:13:03.031405+00:00",
+      "status": "healthy",
+      "username": "mp3fbf",
+      "error": null
+    }
+  ]
+}
