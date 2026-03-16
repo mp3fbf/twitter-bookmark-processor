@@ -148,37 +148,51 @@ async def batch_lookup_tweets(auth: XApiAuth, tweet_ids: list[str]) -> dict:
     return {"tweets": all_tweets, "includes": all_includes}
 
 
-async def search_thread(auth: XApiAuth, conversation_id: str, author: str) -> list[dict]:
-    """Search for thread tweets via search/recent (7-day window)."""
+async def search_thread(auth: XApiAuth, conversation_id: str, author: str) -> list[dict] | None:
+    """Search for thread tweets via search/recent (7-day window).
+
+    Returns list of tweets, empty list if no thread found, or None if rate limited.
+    """
     import httpx
 
     token = await auth.get_valid_token()
     query = f"conversation_id:{conversation_id} from:{author}"
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            response = await client.get(
-                f"{X_API_BASE}/tweets/search/recent",
-                params={
-                    "query": query,
-                    "max_results": "100",
-                    "tweet.fields": TWEET_FIELDS,
-                },
-                headers={"Authorization": f"Bearer {token}"},
-            )
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+                response = await client.get(
+                    f"{X_API_BASE}/tweets/search/recent",
+                    params={
+                        "query": query,
+                        "max_results": "100",
+                        "tweet.fields": TWEET_FIELDS,
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
 
-            if response.status_code != 200:
-                logger.warning("Thread search failed for %s: %d", conversation_id, response.status_code)
-                return []
+                if response.status_code == 429:
+                    if attempt < 2:
+                        wait = 60 * (attempt + 1)
+                        logger.warning("Rate limited, waiting %ds...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    return None  # Signal to caller: stop searching
 
-            body = response.json()
-            tweets = body.get("data", [])
-            tweets.sort(key=lambda t: int(t.get("id", "0")))
-            return tweets
+                if response.status_code != 200:
+                    logger.warning("Thread search failed for %s: %d", conversation_id, response.status_code)
+                    return []
 
-    except Exception as e:
-        logger.warning("Thread search error: %s", e)
-        return []
+                body = response.json()
+                tweets = body.get("data", [])
+                tweets.sort(key=lambda t: int(t.get("id", "0")))
+                return tweets
+
+        except Exception as e:
+            logger.warning("Thread search error: %s", e)
+            return []
+
+    return None
 
 
 async def enrich_packages(auth: XApiAuth, limit: int | None = None) -> dict:
@@ -242,12 +256,21 @@ async def enrich_packages(auth: XApiAuth, limit: int | None = None) -> dict:
         if conv_id:
             pkg["conversation_id"] = conv_id
 
-            # Try thread expansion if this is a thread root
-            if conv_id == bid and not pkg.get("thread_tweets"):
+            # Try thread expansion only if thread indicators present
+            text = pkg.get("tweet_text", "").lower()
+            has_thread_indicator = any(ind in text for ind in ["thread", "\U0001f9f5", "1/", "1."])
+            if (conv_id == bid and not pkg.get("thread_tweets")
+                    and has_thread_indicator and not stats.get("_rate_limited")):
                 author = pkg.get("author_username", "")
                 if author:
+                    # Respect rate limit: 5s between search requests
+                    await asyncio.sleep(5.0)
                     thread_tweets = await search_thread(auth, conv_id, author)
-                    if len(thread_tweets) > 1:
+                    if thread_tweets is None:
+                        # Rate limited even after retries — stop searching
+                        stats["_rate_limited"] = True
+                        logger.warning("Rate limit hit, skipping remaining thread searches")
+                    elif len(thread_tweets) > 1:
                         pkg["thread_tweets"] = [
                             {
                                 "order": i,
@@ -259,10 +282,6 @@ async def enrich_packages(auth: XApiAuth, limit: int | None = None) -> dict:
                         ]
                         stats["threads_expanded"] += 1
                         logger.info("Expanded thread %s: %d tweets", bid, len(thread_tweets))
-                        changed = True
-                    elif conv_id == bid and not thread_tweets:
-                        # Thread root but outside 7-day window
-                        pkg["thread_detected_not_expanded"] = True
                         changed = True
 
             changed = True
