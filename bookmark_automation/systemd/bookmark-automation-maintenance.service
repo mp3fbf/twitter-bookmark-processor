@@ -1,5 +1,5 @@
 [Unit]
-Description=Drain deterministic Twitter bookmark capture and Telegram effects
+Description=Monitor and maintain the Twitter bookmark automation sidecar
 Documentation=file:/workspace/twitter-bookmark-processor/bookmark_automation/README.md
 After=network-online.target
 Wants=network-online.target
@@ -7,7 +7,7 @@ ConditionPathExists=/workspace/twitter-bookmark-processor/data/bookmark-automati
 
 [Service]
 Type=oneshot
-TimeoutStartSec=15min
+TimeoutStartSec=2min
 User=root
 WorkingDirectory=/workspace/twitter-bookmark-processor
 Environment=PYTHONPATH=/workspace/twitter-bookmark-processor
@@ -15,9 +15,9 @@ EnvironmentFile=/etc/bookmark-automation/telegram.env
 UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN GOOGLE_API_KEY GEMINI_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_OAUTH_TOKEN OP_SERVICE_ACCOUNT_TOKEN BOOKMARK_AUTOMATION_RUNNER_COMMAND_JSON
 UMask=0077
 ExecCondition=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 gate
-ExecCondition=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 operational-gate --path /workspace/twitter-bookmark-processor/data --min-free-bytes 1073741824
-ExecStart=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 effects --max-jobs 1 --worker-id systemd-effects --video-dir /workspace/twitter-bookmark-processor/data/videos --note-dir /workspace/notes/Sources/twitter
+ExecStart=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 maintenance --video-dir /workspace/twitter-bookmark-processor/data/videos --retention-days 30 --min-free-bytes 1073741824
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/workspace/twitter-bookmark-processor/data /workspace/notes/Sources/twitter /tmp
+ReadWritePaths=/workspace/twitter-bookmark-processor/data

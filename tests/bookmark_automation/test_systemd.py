@@ -64,3 +64,29 @@ def test_reconciliation_is_full_but_live_and_decisions_never_poll_telegram() -> 
     assert "TimeoutStartSec=2min" in poll
     assert "twitter_bookmark_actions.jsonl" in decisions
     assert "getUpdates" not in decisions
+
+
+def test_runtime_workers_fail_closed_below_the_storage_floor() -> None:
+    services = sorted(SYSTEMD.glob("*.service"))
+    workers = [path for path in services if path.name != "bookmark-automation-maintenance.service"]
+    operational_gate = (
+        "ExecCondition=/usr/bin/python3 -m bookmark_automation --db "
+        "/workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 "
+        "operational-gate --path /workspace/twitter-bookmark-processor/data "
+        "--min-free-bytes 1073741824"
+    )
+
+    assert workers
+    assert all(operational_gate in path.read_text(encoding="utf-8") for path in workers)
+
+
+def test_maintenance_timer_alerts_and_prunes_without_being_blocked_by_low_disk() -> None:
+    service = _unit("bookmark-automation-maintenance.service")
+    timer = _unit("bookmark-automation-maintenance.timer")
+
+    assert "EnvironmentFile=/etc/bookmark-automation/telegram.env" in service
+    assert "maintenance --video-dir /workspace/twitter-bookmark-processor/data/videos" in service
+    assert "--retention-days 30 --min-free-bytes 1073741824" in service
+    assert "operational-gate" not in service
+    assert "ReadWritePaths=/workspace/twitter-bookmark-processor/data" in service
+    assert "OnUnitActiveSec=5min" in timer

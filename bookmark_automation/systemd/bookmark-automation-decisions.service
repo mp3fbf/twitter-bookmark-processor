@@ -12,6 +12,7 @@ Environment=PYTHONPATH=/workspace/twitter-bookmark-processor
 UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN GOOGLE_API_KEY GEMINI_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_OAUTH_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID OP_SERVICE_ACCOUNT_TOKEN BOOKMARK_AUTOMATION_RUNNER_COMMAND_JSON
 UMask=0077
 ExecCondition=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 gate
+ExecCondition=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 operational-gate --path /workspace/twitter-bookmark-processor/data --min-free-bytes 1073741824
 ExecStart=/usr/bin/python3 -m bookmark_automation --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 import-decisions --input /workspace/JP/data/twitter_bookmark_actions.jsonl
 NoNewPrivileges=true
 PrivateTmp=true
