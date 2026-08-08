@@ -11,7 +11,7 @@
     "next_action": {"type": ["string", "null"]},
     "source_note": {
       "type": "object",
-      "required": ["title", "source_type", "source_url", "key_claims", "evidence", "provenance"],
+      "required": ["title", "source_type", "source_url", "author", "published_at", "key_claims", "evidence", "provenance"],
       "properties": {
         "title": {"type": "string", "maxLength": 240},
         "source_type": {"enum": ["article", "tweet", "thread", "video", "other"]},
