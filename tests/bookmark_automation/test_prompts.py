@@ -1,7 +1,21 @@
 """Versioned prompt and schema safety contracts."""
 
+from typing import Any
+
 from bookmark_automation.prompts import PromptCatalog
 from bookmark_automation.store import Job
+
+
+def _assert_every_object_property_is_required(value: Any) -> None:
+    if isinstance(value, dict):
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            assert set(value.get("required", [])) == set(properties)
+        for nested in value.values():
+            _assert_every_object_property_is_required(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _assert_every_object_property_is_required(nested)
 
 
 def test_quick_prompt_bounds_untrusted_source_and_requires_injection_signal() -> None:
@@ -51,6 +65,30 @@ def test_deep_schema_returns_auditable_source_note_and_promotion_candidates_only
     assert "promotion_candidates" in schema["required"]
     assert "knowledge_disposition" in schema["required"]
     assert "note_path" not in schema["properties"]
+
+
+def test_all_schemas_are_compatible_with_codex_strict_structured_outputs() -> None:
+    catalog = PromptCatalog()
+    for task_kind, profile in (
+        ("quick", "quick"),
+        ("deep", "deep"),
+        ("aggregate", "aggregate"),
+        ("backlog", "deep"),
+    ):
+        job = Job(
+            id=100,
+            bookmark_id=f"schema-{task_kind}",
+            task_kind=task_kind,
+            input_revision="schema-v1",
+            profile=profile,
+            priority=1,
+            state="leased",
+            available_at="2026-08-08T00:00:00+00:00",
+            lease_owner="worker",
+            lease_until="2026-08-08T00:20:00+00:00",
+        )
+        _, schema = catalog.build(job, {"text": "schema compatibility"})
+        _assert_every_object_property_is_required(schema)
 
 
 def test_aggregate_ranks_every_bookmark_and_never_filters_or_deletes() -> None:
