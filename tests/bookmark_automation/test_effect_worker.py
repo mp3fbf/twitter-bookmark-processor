@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import bookmark_automation.effect_worker as effect_worker_module
-from bookmark_automation.content import ArticleContent, RecallResult
+from bookmark_automation.content import ArticleContent, ArticleContentError, RecallResult
 from bookmark_automation.effect_worker import EffectWorker
 from bookmark_automation.effects import ExternalEffectError, TelegramReceipt, VideoReceipt
 from bookmark_automation.notes import write_source_note
@@ -326,6 +326,48 @@ def test_effect_worker_captures_article_and_local_recall_as_separate_receipts(
     assert recall_receipt is not None
     assert recall_receipt["status"] == "available"
     assert recall_receipt["hits"][0]["path"] == "Concepts/Memory.md"
+
+
+def test_x_redirect_without_external_article_is_a_safe_terminal_receipt(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 8, 13, 22, tzinfo=UTC)
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    BookmarkAutomation(store, clock=lambda: now).ingest(
+        {
+            "kind": "bookmarks",
+            "id": "1900000000000000199",
+            "text": "A t.co URL that resolves back to X",
+            "urls": [{"expanded_url": "https://t.co/not-an-article"}],
+        }
+    )
+
+    def excluded(_payload: dict[str, Any]) -> ArticleContent:
+        raise ArticleContentError(
+            "redirected back to X",
+            code="article_target_excluded",
+            retryable=False,
+        )
+
+    worker = EffectWorker(
+        store=store,
+        telegram=RecordingTelegram(),
+        worker_id="effect-test",
+        video_dir=tmp_path / "videos",
+        note_dir=tmp_path / "notes",
+        fetch_article_content=excluded,
+    )
+
+    outcome = worker.run_once(now=now, task_kinds={"fetch_article"})
+
+    assert outcome is not None and outcome.status == "done"
+    job = next(job for job in store.list_jobs() if job.task_kind == "fetch_article")
+    assert job.state == "done"
+    assert store.receipt_payload(job.id, "fetch_article") == {
+        "reason": "article_target_excluded",
+        "status": "not_applicable",
+    }
+    assert store.status_snapshot()["dead_letter"] == 0
 
 
 def test_skip_during_reversible_article_fetch_cancels_without_a_receipt(
