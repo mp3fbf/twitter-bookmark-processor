@@ -11,8 +11,8 @@ import pytest
 import bookmark_automation.content as content_module
 from bookmark_automation.content import (
     ArticleContentError,
-    URLSecurityError,
     RecallError,
+    URLSecurityError,
     fetch_article,
     recall_second_brain,
     select_external_url,

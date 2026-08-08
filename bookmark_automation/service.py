@@ -12,7 +12,6 @@ from .content import embedded_x_article_raw_text
 from .store import AutomationStore, EnqueueResult
 from .store import DecisionResult as StoreDecisionResult
 
-
 _VOLATILE_REVISION_FIELDS = {
     "metrics",
     "_raw",

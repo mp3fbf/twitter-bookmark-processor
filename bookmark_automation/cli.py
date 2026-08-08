@@ -22,7 +22,6 @@ from .service import BookmarkAutomation
 from .store import AutomationStore
 from .worker import InferenceWorker
 
-
 BRASILIA = ZoneInfo("America/Sao_Paulo")
 DEFAULT_VIDEO_DIR = Path("/workspace/twitter-bookmark-processor/data/videos")
 DEFAULT_NOTE_DIR = Path("/workspace/notes/Sources/twitter")

@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 SYSTEMD = Path(__file__).parents[2] / "bookmark_automation" / "systemd"
 BOOTSTRAP_MARKER = (
     "ConditionPathExists=/workspace/twitter-bookmark-processor/data/"

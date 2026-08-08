@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import ipaddress
 import http.client
+import ipaddress
 import json
 import socket
 import ssl
@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlparse
-
 
 _URL_KEYS = ("expanded_url", "expandedUrl", "unwound_url", "unwoundUrl", "url")
 _X_HOSTS = {"x.com", "twitter.com", "pbs.twimg.com", "video.twimg.com"}
