@@ -1074,6 +1074,51 @@ class AutomationStore:
                     ),
                 )
             if created and defer_until is not None:
+                defer_until_text = defer_until.isoformat()
+                connection.execute(
+                    """
+                    UPDATE attempts
+                    SET status = 'cancelled',
+                        detail_json = '{"reason":"bookmark_defer"}',
+                        finished_at = ?
+                    WHERE status = 'running'
+                      AND job_id IN (
+                          SELECT id
+                          FROM jobs
+                          WHERE bookmark_id = ?
+                            AND task_kind = 'deep'
+                            AND state = 'leased'
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM attempts AS committed
+                          WHERE committed.job_id = attempts.job_id
+                            AND committed.status = 'effect_committed'
+                      )
+                    """,
+                    (now_text, bookmark_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET state = 'pending',
+                        available_at = MAX(available_at, ?),
+                        lease_owner = NULL,
+                        lease_until = NULL,
+                        lease_token = NULL,
+                        cancel_requested = 0
+                    WHERE bookmark_id = ?
+                      AND task_kind = 'deep'
+                      AND state = 'leased'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM attempts
+                          WHERE attempts.job_id = jobs.id
+                            AND attempts.status = 'effect_committed'
+                      )
+                    """,
+                    (defer_until_text, bookmark_id),
+                )
                 connection.execute(
                     """
                     UPDATE jobs
@@ -1082,7 +1127,7 @@ class AutomationStore:
                       AND task_kind = 'deep'
                       AND state IN ('pending', 'waiting_provider')
                     """,
-                    (defer_until.isoformat(), bookmark_id),
+                    (defer_until_text, bookmark_id),
                 )
             if created and cancel_semantic:
                 cancellable_kinds = (

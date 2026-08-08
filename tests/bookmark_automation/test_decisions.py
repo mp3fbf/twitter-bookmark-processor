@@ -4,8 +4,10 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from bookmark_automation.service import BookmarkAutomation
-from bookmark_automation.store import AutomationStore
+from bookmark_automation.store import AutomationStore, LeaseLostError
 
 
 def test_act_decision_is_idempotent_and_enqueues_one_high_priority_deep_job(
@@ -71,6 +73,96 @@ def test_defer_moves_scheduled_deep_work_to_the_defer_window(tmp_path: Path) -> 
 
     deep = next(job for job in store.list_jobs() if job.task_kind == "deep")
     assert deep.available_at == (now + timedelta(hours=24)).isoformat()
+
+
+def test_defer_fences_a_leased_deep_attempt_until_the_new_deadline(
+    tmp_path: Path,
+) -> None:
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    initial = datetime(2026, 8, 8, 15, 0, tzinfo=UTC)
+    current = [initial]
+    automation = BookmarkAutomation(
+        store,
+        clock=lambda: current[0],
+        defer_for=timedelta(hours=24),
+    )
+    bookmark_id = "1900000000000000032"
+    automation.ingest(
+        {
+            "kind": "bookmarks",
+            "id": bookmark_id,
+            "text": "A deep analysis already started",
+            "urls": [{"expanded_url": "https://example.test/defer-running"}],
+        }
+    )
+    for job in store.list_jobs():
+        if job.task_kind in {"quick", "fetch_article", "recall_context"}:
+            store.complete_effect(
+                job_id=job.id,
+                effect_kind=job.task_kind,
+                payload={"status": "available"},
+                now=initial,
+            )
+    current[0] = initial + timedelta(minutes=16)
+    claim = store.lease_next(
+        worker_id="deep-before-defer",
+        now=current[0],
+        lease_for=timedelta(minutes=20),
+        profiles={"deep"},
+    )
+    assert claim is not None and claim.lease_token is not None
+    attempt_id = store.start_attempt(
+        job_id=claim.id,
+        worker_id="deep-before-defer",
+        lease_token=claim.lease_token,
+        now=current[0],
+    )
+
+    automation.decide(
+        bookmark_id=bookmark_id,
+        action="defer",
+        decision_id="telegram-update-4016",
+    )
+
+    deferred_until = current[0] + timedelta(hours=24)
+    deep = next(job for job in store.list_jobs() if job.id == claim.id)
+    assert deep.state == "pending"
+    assert deep.available_at == deferred_until.isoformat()
+    assert deep.lease_owner is None
+    assert deep.lease_token is None
+    with sqlite3.connect(store.path) as connection:
+        attempt_status = connection.execute(
+            "SELECT status FROM attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()[0]
+    assert attempt_status == "cancelled"
+    with pytest.raises(LeaseLostError):
+        store.complete_success(
+            job_id=claim.id,
+            attempt_id=attempt_id,
+            worker_id="deep-before-defer",
+            lease_token=claim.lease_token,
+            provider="codex",
+            model="subscription",
+            effect_kind="deep",
+            receipt_json='{"status":"late"}',
+            now=current[0],
+        )
+    assert (
+        store.lease_next(
+            worker_id="too-early",
+            now=deferred_until - timedelta(seconds=1),
+            lease_for=timedelta(minutes=20),
+            profiles={"deep"},
+        )
+        is None
+    )
+    resumed = store.lease_next(
+        worker_id="after-defer",
+        now=deferred_until,
+        lease_for=timedelta(minutes=20),
+        profiles={"deep"},
+    )
+    assert resumed is not None and resumed.id == claim.id
 
 
 def test_defer_creates_deep_work_for_a_bookmark_without_a_url(tmp_path: Path) -> None:
