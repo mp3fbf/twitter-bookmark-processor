@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
-
 _SEMANTIC_TASK_KINDS = (
     "quick",
     "fetch_article",

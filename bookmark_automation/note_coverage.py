@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-
 _BOOKMARK_ID = re.compile(
     r"^bookmark_id:\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s#]+))\s*$",
     re.MULTILINE,
