@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .content import (
     ArticleContent,
+    ArticleContentError,
     RecallResult,
     fetch_article,
     recall_second_brain,
@@ -252,7 +253,15 @@ class EffectWorker:
                 "telegram_sha256": delivered.sha256,
             }
         if task_kind == "fetch_article":
-            article = self.fetch_article_content(payload)
+            try:
+                article = self.fetch_article_content(payload)
+            except ArticleContentError as exc:
+                if exc.code not in {
+                    "article_target_excluded",
+                    "article_url_unavailable",
+                }:
+                    raise
+                return {"status": "not_applicable", "reason": exc.code}
             return {"status": "available", **asdict(article)}
         if task_kind == "recall_context":
             recalled = self.recall_context(self.store.recall_query(job))

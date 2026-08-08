@@ -271,6 +271,55 @@ def test_external_article_without_byline_does_not_inherit_tweet_metadata(
     assert source["published_at"] is None
 
 
+def test_not_applicable_article_uses_tweet_provenance(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 8, 14, 20, tzinfo=UTC)
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    bookmark_id = "1900000000000000204"
+    BookmarkAutomation(store, clock=lambda: now).ingest(
+        {
+            "kind": "bookmarks",
+            "id": bookmark_id,
+            "text": "A t.co URL that resolves back to X",
+            "author": {"username": "real_handle", "name": "Real Author"},
+            "createdAt": "2026-08-07T12:34:56.000Z",
+            "urls": [{"expanded_url": "https://t.co/not-an-article"}],
+        }
+    )
+    jobs = {job.task_kind: job for job in store.list_jobs()}
+    for task_kind, payload in (
+        ("quick", {"status": "available"}),
+        ("recall_context", {"status": "available", "hits": []}),
+        (
+            "fetch_article",
+            {"status": "not_applicable", "reason": "article_target_excluded"},
+        ),
+    ):
+        store.complete_effect(
+            job_id=jobs[task_kind].id,
+            effect_kind=task_kind,
+            payload=payload,
+            now=now,
+        )
+
+    outcome = InferenceWorker(
+        store=store,
+        runner=DeepRunner(),
+        worker_id="metadata-test",
+    ).run_once(now=now + timedelta(minutes=16))
+
+    assert outcome is not None and outcome.status == "done"
+    note_job = next(
+        job for job in store.list_jobs() if job.task_kind == "write_source_note"
+    )
+    source = store.job_payload(note_job)["analysis"]["source_note"]
+    assert source["source_url"] == f"https://x.com/real_handle/status/{bookmark_id}"
+    assert source["author"] == "Real Author"
+    assert source["published_at"] == "2026-08-07T12:34:56.000Z"
+    assert source["provenance"]["content_status"] == "not_applicable"
+
+
 def test_deep_never_preserves_hallucinated_source_metadata_when_capture_is_missing(
     tmp_path: Path,
 ) -> None:

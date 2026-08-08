@@ -308,7 +308,7 @@ class InferenceWorker:
         bookmark = job_input.get("bookmark") or {}
 
         article_status = str(article.get("status") or evidence_status.get("fetch_article") or "")
-        if not article_status:
+        if not article_status or article_status == "not_applicable":
             content_status = "not_applicable"
         elif article_status == "available":
             content_status = "partial" if article.get("truncated") else "available"
@@ -338,7 +338,7 @@ class InferenceWorker:
         source["source_url"] = (
             article.get("final_url") or article.get("original_url") or tweet_url
         )
-        if article_status:
+        if article_status and article_status != "not_applicable":
             # External article metadata must not silently inherit the tweet's
             # author/date. Embedded X Articles already carry those values in
             # their deterministic fetch receipt.
