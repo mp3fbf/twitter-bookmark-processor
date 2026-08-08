@@ -210,7 +210,7 @@ are versioned under `prompts/v1/` and `schemas/v1/`.
 
 ## Staged systemd operation
 
-The repository stages six service/timer pairs under `systemd/`; it does not
+The repository stages seven service/timer pairs under `systemd/`; it does not
 copy them to `/etc/systemd/system`, start them, or enable them. Their paths
 assume the merged checkout lives at `/workspace/twitter-bookmark-processor`.
 
@@ -222,6 +222,7 @@ assume the merged checkout lives at `/workspace/twitter-bookmark-processor`.
 | `bookmark-automation-decisions` | 15 seconds | Replay the existing bridge's append-only callback JSONL idempotently. |
 | `bookmark-automation-inference` | 60 seconds | Run provider-neutral `quick`, `deep`, and `aggregate` jobs through subscription CLIs. |
 | `bookmark-automation-periodic` | daily, 07:10 BRT | Freeze incremental digest batches of 25 and advance at most five historical revisions. |
+| `bookmark-automation-maintenance` | every 5 minutes | Alert new dead letters and ambiguous committed effects, checkpoint/measure SQLite WAL, prune completed videos after 30 days, and alert on low disk. |
 
 The templates deliberately use the absolute command requested for near-real-time
 polling:
@@ -373,6 +374,13 @@ PYTHONPATH=/workspace/_scripts/subscription-inference \
 systemd-analyze verify \
   /workspace/twitter-bookmark-processor/bookmark_automation/systemd/*.service \
   /workspace/twitter-bookmark-processor/bookmark_automation/systemd/*.timer
+
+PYTHONPATH=/workspace/twitter-bookmark-processor \
+  /usr/bin/python3 -m bookmark_automation \
+  --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 \
+  operational-gate \
+  --path /workspace/twitter-bookmark-processor/data \
+  --min-free-bytes 1073741824
 ```
 
 Before activation, the `status` receipt must report both
@@ -400,7 +408,8 @@ systemctl enable --now \
   bookmark-automation-effects.timer \
   bookmark-automation-decisions.timer \
   bookmark-automation-inference.timer \
-  bookmark-automation-periodic.timer
+  bookmark-automation-periodic.timer \
+  bookmark-automation-maintenance.timer
 ```
 
 After an approved activation, inspect health without revealing stored content:
@@ -418,15 +427,40 @@ revision is watermarked when its frozen job is queued, so deleting that job or
 its coverage row by hand can either lose it from future digests or duplicate it.
 Never repair this state with ad-hoc SQLite updates.
 
-Production activation remains blocked until there is an operator-visible alert
-for new dead letters and a tested, idempotent way to inspect and requeue the same
-job identity. The recovery path must preserve its input snapshot and aggregate
-coverage, record the retry, and distinguish `waiting_provider` (subscription
-temporarily unavailable) from an ordinary terminal failure. The operator must
-also define a separate audited resolution for unresolved `committed_effects`:
-because an irreversible effect may already have happened, they must never be
-blindly requeued. Retention and disk monitoring for the SQLite/WAL and saved
-videos remain required.
+`bookmark-automation-maintenance` sends an operator-visible Telegram alert once
+per dead-letter attempt generation. Inspect and requeue without changing the
+frozen input, attempt history, or aggregate coverage:
+
+```bash
+python3 -m bookmark_automation --db data/bookmark-automation.sqlite3 \
+  dead-letter-list
+python3 -m bookmark_automation --db data/bookmark-automation.sqlite3 \
+  dead-letter-requeue --job-id 42 --reason "provider configuration repaired"
+```
+
+The requeue is idempotent. `waiting_provider` remains a separate non-terminal
+state and is not accepted by the DLQ command.
+
+An unresolved `committed_effect` is alerted separately and never requeued by a
+worker. The operator must record one audited resolution:
+
+```bash
+python3 -m bookmark_automation --db data/bookmark-automation.sqlite3 \
+  committed-effect-list
+python3 -m bookmark_automation --db data/bookmark-automation.sqlite3 \
+  committed-effect-resolve --job-id 43 --resolution confirmed \
+  --reason "Telegram showed the message"
+# Only with positive evidence that the effect did not occur:
+python3 -m bookmark_automation --db data/bookmark-automation.sqlite3 \
+  committed-effect-resolve --job-id 43 --resolution not-delivered \
+  --reason "Bot API request never left the host"
+```
+
+Maintenance checkpoints and reports SQLite/WAL sizes, prunes only expired files
+whose `deliver_video` job is already `done`, and alerts once per low-disk
+incident. Every content/inference worker has an independent 1 GiB free-space
+`ExecCondition`; maintenance deliberately remains runnable so it can prune and
+alert while workers are blocked.
 
 ### Rollback
 
@@ -441,7 +475,8 @@ systemctl disable --now \
   bookmark-automation-effects.timer \
   bookmark-automation-decisions.timer \
   bookmark-automation-inference.timer \
-  bookmark-automation-periodic.timer
+  bookmark-automation-periodic.timer \
+  bookmark-automation-maintenance.timer
 
 systemctl stop \
   bookmark-automation-poll.service \
@@ -449,7 +484,8 @@ systemctl stop \
   bookmark-automation-effects.service \
   bookmark-automation-decisions.service \
   bookmark-automation-inference.service \
-  bookmark-automation-periodic.service
+  bookmark-automation-periodic.service \
+  bookmark-automation-maintenance.service
 ```
 
 Preserve the SQLite database together with its `-wal`/`-shm` files and both
@@ -479,9 +515,9 @@ operator approval and remains blocked until all of these are true:
 - native-X video delivery is canaried without overwriting the original, the
   external-video limitation is accepted, and Source-note permissions are
   checked;
-- dead-letter alerting/requeue, committed-effect recovery, Telegram at-least-once
-  behavior, retention, disk monitoring, and the rollback procedure above are
-  accepted.
+- the maintenance timer, audited DLQ/committed-effect recovery, Telegram
+  append-only callback replay, retention, disk floor, and the rollback
+  procedure above pass their production checks.
 
 A Bird payload that reports video without a usable `media[].videoUrl` remains
 retryable rather than being marked done. No unit may be copied, enabled, or

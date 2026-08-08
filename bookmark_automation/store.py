@@ -272,6 +272,17 @@ class AutomationStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS operator_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_key TEXT NOT NULL UNIQUE,
+                    job_id INTEGER,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    detail_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (job_id) REFERENCES jobs(id)
+                );
                 """
             )
             connection.execute(
@@ -814,6 +825,369 @@ class AutomationStore:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def requeue_dead_letter(
+        self,
+        *,
+        job_id: int,
+        reason: str,
+        now: datetime,
+    ) -> bool:
+        """Requeue one terminal job without changing its frozen input or history."""
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("requeue reason is required")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT state FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise ValueError(f"job {job_id} does not exist")
+            previous = connection.execute(
+                """
+                SELECT 1 FROM operator_actions
+                WHERE job_id = ? AND action = 'dead_letter_requeue'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if job["state"] != "dead_letter":
+                if previous is not None and job["state"] == "pending":
+                    return False
+                raise ValueError(f"job {job_id} is not in dead_letter")
+            failed_attempts = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS total FROM attempts
+                    WHERE job_id = ? AND status = 'failed'
+                    """,
+                    (job_id,),
+                ).fetchone()["total"]
+            )
+            action_key = f"dead_letter_requeue:{job_id}:{failed_attempts}"
+            inserted = connection.execute(
+                """
+                INSERT OR IGNORE INTO operator_actions (
+                    action_key, job_id, action, reason, detail_json, created_at
+                ) VALUES (?, ?, 'dead_letter_requeue', ?, ?, ?)
+                """,
+                (
+                    action_key,
+                    job_id,
+                    reason,
+                    json.dumps({"failed_attempts": failed_attempts}, sort_keys=True),
+                    now.isoformat(),
+                ),
+            ).rowcount
+            if not inserted:
+                return False
+            connection.execute(
+                """
+                UPDATE jobs
+                SET state = 'pending', available_at = ?, lease_owner = NULL,
+                    lease_until = NULL, lease_token = NULL, cancel_requested = 0
+                WHERE id = ? AND state = 'dead_letter'
+                """,
+                (now.isoformat(), job_id),
+            )
+        return True
+
+    def committed_effect_snapshot(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """List irreversible effects that crossed the boundary without a receipt."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.id AS job_id, jobs.bookmark_id, jobs.task_kind,
+                       attempts.id AS attempt_id, attempts.started_at,
+                       attempts.finished_at
+                FROM jobs
+                JOIN attempts ON attempts.job_id = jobs.id
+                WHERE jobs.state = 'leased'
+                  AND attempts.status = 'effect_committed'
+                ORDER BY jobs.id ASC, attempts.id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def pending_dead_letter_alerts(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return dead letters whose current failed-attempt generation was not alerted."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH terminal AS (
+                    SELECT jobs.id AS job_id, jobs.task_kind,
+                           COUNT(attempts.id) AS attempt_count
+                    FROM jobs
+                    LEFT JOIN attempts
+                      ON attempts.job_id = jobs.id
+                     AND attempts.status = 'failed'
+                    WHERE jobs.state = 'dead_letter'
+                    GROUP BY jobs.id
+                )
+                SELECT terminal.job_id, terminal.task_kind, terminal.attempt_count
+                FROM terminal
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM operator_actions
+                    WHERE operator_actions.action_key =
+                        'dead_letter_alert:' || terminal.job_id || ':' || terminal.attempt_count
+                )
+                ORDER BY terminal.job_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_dead_letter_alerted(
+        self,
+        *,
+        job_id: int,
+        attempt_count: int,
+        now: datetime,
+    ) -> bool:
+        """Record alert delivery after Telegram acknowledged the message."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO operator_actions (
+                    action_key, job_id, action, reason, detail_json, created_at
+                ) VALUES (?, ?, 'dead_letter_alert', 'telegram alert delivered', ?, ?)
+                """,
+                (
+                    f"dead_letter_alert:{job_id}:{attempt_count}",
+                    job_id,
+                    json.dumps({"attempt_count": attempt_count}, sort_keys=True),
+                    now.isoformat(),
+                ),
+            )
+        return bool(cursor.rowcount)
+
+    def pending_committed_effect_alerts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return unresolved committed effects not yet shown to the operator."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.id AS job_id, jobs.task_kind,
+                       attempts.id AS attempt_id
+                FROM jobs
+                JOIN attempts ON attempts.job_id = jobs.id
+                WHERE jobs.state = 'leased'
+                  AND attempts.status = 'effect_committed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM operator_actions
+                      WHERE operator_actions.action_key =
+                          'committed_effect_alert:' || jobs.id || ':' || attempts.id
+                  )
+                ORDER BY jobs.id ASC, attempts.id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def completed_video_bookmark_ids(self) -> set[str]:
+        """Return bookmark IDs whose native-video delivery finished durably."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT bookmark_id FROM jobs
+                WHERE task_kind = 'deliver_video' AND state = 'done'
+                  AND bookmark_id IS NOT NULL
+                """
+            ).fetchall()
+        return {str(row["bookmark_id"]) for row in rows}
+
+    def health_state(self, key: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (f"health:{key}",),
+            ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_health_state(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (f"health:{key}", value),
+            )
+
+    def checkpoint_wal(self) -> dict[str, int]:
+        """Run a non-blocking WAL checkpoint and expose only operational counts."""
+        with self._connect() as connection:
+            row = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        return {
+            "busy": int(row[0]),
+            "log_frames": int(row[1]),
+            "checkpointed_frames": int(row[2]),
+        }
+
+    def mark_committed_effect_alerted(
+        self,
+        *,
+        job_id: int,
+        attempt_id: int,
+        now: datetime,
+    ) -> bool:
+        """Record a successful operator alert for an ambiguous effect."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO operator_actions (
+                    action_key, job_id, action, reason, detail_json, created_at
+                ) VALUES (?, ?, 'committed_effect_alert',
+                          'telegram alert delivered', ?, ?)
+                """,
+                (
+                    f"committed_effect_alert:{job_id}:{attempt_id}",
+                    job_id,
+                    json.dumps({"attempt_id": attempt_id}, sort_keys=True),
+                    now.isoformat(),
+                ),
+            )
+        return bool(cursor.rowcount)
+
+    def resolve_committed_effect(
+        self,
+        *,
+        job_id: int,
+        resolution: str,
+        reason: str,
+        now: datetime,
+    ) -> bool:
+        """Resolve an ambiguous irreversible effect without blind replay."""
+        if resolution not in {"confirmed", "not-delivered"}:
+            raise ValueError("unsupported committed effect resolution")
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("resolution reason is required")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            prior = connection.execute(
+                """
+                SELECT detail_json FROM operator_actions
+                WHERE job_id = ? AND action = 'committed_effect_resolution'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if prior is not None:
+                prior_resolution = json.loads(prior["detail_json"])["resolution"]
+                if prior_resolution == resolution:
+                    return False
+                raise ValueError(f"job {job_id} already has a conflicting resolution")
+            row = connection.execute(
+                """
+                SELECT jobs.task_kind, attempts.id AS attempt_id,
+                       attempts.detail_json AS previous_detail_json
+                FROM jobs
+                JOIN attempts ON attempts.job_id = jobs.id
+                WHERE jobs.id = ? AND jobs.state = 'leased'
+                  AND attempts.status = 'effect_committed'
+                ORDER BY attempts.id DESC LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"job {job_id} has no unresolved committed effect")
+            try:
+                previous_detail = (
+                    json.loads(row["previous_detail_json"])
+                    if row["previous_detail_json"] is not None
+                    else None
+                )
+            except json.JSONDecodeError:
+                previous_detail = {"raw": str(row["previous_detail_json"])}
+            detail = json.dumps(
+                {
+                    "previous_detail": previous_detail,
+                    "reason": reason,
+                    "resolution": resolution,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            connection.execute(
+                """
+                INSERT INTO operator_actions (
+                    action_key, job_id, action, reason, detail_json, created_at
+                ) VALUES (?, ?, 'committed_effect_resolution', ?, ?, ?)
+                """,
+                (
+                    f"committed_effect_resolution:{job_id}:{row['attempt_id']}",
+                    job_id,
+                    reason,
+                    detail,
+                    now.isoformat(),
+                ),
+            )
+            if resolution == "confirmed":
+                receipt = json.dumps(
+                    {
+                        "reason": reason,
+                        "resolution": resolution,
+                        "status": "confirmed_by_operator",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO receipts (
+                        job_id, effect_kind, idempotency_key, payload_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        row["task_kind"],
+                        f"job:{job_id}:{row['task_kind']}",
+                        receipt,
+                        now.isoformat(),
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE attempts SET status = 'succeeded', detail_json = ?,
+                        finished_at = ? WHERE id = ?
+                    """,
+                    (detail, now.isoformat(), row["attempt_id"]),
+                )
+                state = "done"
+            else:
+                connection.execute(
+                    """
+                    UPDATE attempts SET status = 'resolved_not_delivered',
+                        detail_json = ?, finished_at = ? WHERE id = ?
+                    """,
+                    (detail, now.isoformat(), row["attempt_id"]),
+                )
+                state = "pending"
+            connection.execute(
+                """
+                UPDATE jobs SET state = ?, available_at = ?, lease_owner = NULL,
+                    lease_until = NULL, lease_token = NULL, cancel_requested = 0
+                WHERE id = ?
+                """,
+                (state, now.isoformat(), job_id),
+            )
+        return True
 
     def list_jobs(self) -> list[Job]:
         with self._connect() as connection:

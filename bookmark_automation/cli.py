@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 from collections import Counter
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .effect_worker import EffectWorker
 from .effects import TelegramClient
+from .maintenance import MaintenanceWorker
 from .note_coverage import scan_note_coverage
 from .runner import SubprocessSubscriptionRunner
 from .service import BookmarkAutomation
@@ -94,12 +96,51 @@ def _parser() -> argparse.ArgumentParser:
     )
     gate = commands.add_parser("gate", help="read-only activation gate validation")
     gate.add_argument("--require-note-coverage", action="store_true")
+    operational_gate = commands.add_parser(
+        "operational-gate",
+        help="fail closed when runtime storage is below the safe free-space floor",
+    )
+    operational_gate.add_argument("--path", action="append", required=True)
+    operational_gate.add_argument("--min-free-bytes", type=int, required=True)
     commands.add_parser("status", help="report sidecar queue counts without stored content")
     dead_letter = commands.add_parser(
         "dead-letter-list",
-        help="read-only DLQ inspection; requeue is intentionally unsupported",
+        help="read-only DLQ inspection with explicit audited requeue available",
     )
     dead_letter.add_argument("--limit", type=int, default=100)
+    requeue = commands.add_parser(
+        "dead-letter-requeue",
+        help="explicitly and idempotently requeue one terminal job",
+    )
+    requeue.add_argument("--job-id", type=int, required=True)
+    requeue.add_argument("--reason", required=True)
+    committed = commands.add_parser(
+        "committed-effect-list",
+        help="list irreversible effects that require explicit operator resolution",
+    )
+    committed.add_argument("--limit", type=int, default=100)
+    resolve = commands.add_parser(
+        "committed-effect-resolve",
+        help="audit an operator-confirmed resolution without blind replay",
+    )
+    resolve.add_argument("--job-id", type=int, required=True)
+    resolve.add_argument(
+        "--resolution",
+        choices=("confirmed", "not-delivered"),
+        required=True,
+    )
+    resolve.add_argument("--reason", required=True)
+    maintenance = commands.add_parser(
+        "maintenance",
+        help="alert terminal states, prune completed videos, and monitor storage",
+    )
+    maintenance.add_argument("--video-dir", type=Path, default=DEFAULT_VIDEO_DIR)
+    maintenance.add_argument("--retention-days", type=int, default=30)
+    maintenance.add_argument(
+        "--min-free-bytes",
+        type=int,
+        default=1024 * 1024 * 1024,
+    )
     return parser
 
 
@@ -177,6 +218,20 @@ def main(
         json.dump(result, stdout, sort_keys=True)
         stdout.write("\n")
         return 0 if result["valid"] else 1
+    if args.command == "operational-gate":
+        if args.min_free_bytes <= 0:
+            raise ValueError("min-free-bytes must be positive")
+        free_bytes = min(
+            int(shutil.disk_usage(Path(path)).free) for path in args.path
+        )
+        result = {
+            "free_bytes": free_bytes,
+            "min_free_bytes": args.min_free_bytes,
+            "valid": free_bytes >= args.min_free_bytes,
+        }
+        json.dump(result, stdout, sort_keys=True)
+        stdout.write("\n")
+        return 0 if result["valid"] else 1
     if args.command == "dead-letter-list":
         if not args.db.is_file():
             json.dump({"database_exists": False, "jobs": []}, stdout, sort_keys=True)
@@ -185,7 +240,30 @@ def main(
         store = AutomationStore(args.db, initialize=False)
         jobs = store.dead_letter_snapshot(limit=args.limit)
         json.dump(
-            {"database_exists": True, "jobs": jobs, "requeue_supported": False},
+            {"database_exists": True, "jobs": jobs, "requeue_supported": True},
+            stdout,
+            sort_keys=True,
+        )
+        stdout.write("\n")
+        return 0
+    if args.command == "committed-effect-list":
+        if not args.db.is_file():
+            json.dump(
+                {"database_exists": False, "jobs": [], "resolution_required": False},
+                stdout,
+                sort_keys=True,
+            )
+            stdout.write("\n")
+            return 0
+        jobs = AutomationStore(args.db, initialize=False).committed_effect_snapshot(
+            limit=args.limit
+        )
+        json.dump(
+            {
+                "database_exists": True,
+                "jobs": jobs,
+                "resolution_required": bool(jobs),
+            },
             stdout,
             sort_keys=True,
         )
@@ -284,6 +362,45 @@ def main(
         json.dump(summary, stdout, ensure_ascii=False, sort_keys=True)
         stdout.write("\n")
         return 0
+    if args.command == "dead-letter-requeue":
+        changed = store.requeue_dead_letter(
+            job_id=args.job_id,
+            reason=args.reason,
+            now=datetime.now(UTC),
+        )
+        json.dump(
+            {"changed": changed, "job_id": args.job_id, "state": "pending"},
+            stdout,
+            sort_keys=True,
+        )
+        stdout.write("\n")
+        return 0
+    if args.command == "committed-effect-resolve":
+        changed = store.resolve_committed_effect(
+            job_id=args.job_id,
+            resolution=args.resolution,
+            reason=args.reason,
+            now=datetime.now(UTC),
+        )
+        state = "done" if args.resolution == "confirmed" else "pending"
+        json.dump(
+            {"changed": changed, "job_id": args.job_id, "state": state},
+            stdout,
+            sort_keys=True,
+        )
+        stdout.write("\n")
+        return 0
+    if args.command == "maintenance":
+        result = MaintenanceWorker(
+            store=store,
+            telegram=TelegramClient(environ=os.environ),
+            video_dir=args.video_dir,
+            retention_days=args.retention_days,
+            min_free_bytes=args.min_free_bytes,
+        ).run(now=datetime.now(UTC))
+        json.dump(result, stdout, sort_keys=True)
+        stdout.write("\n")
+        return 0 if result["healthy"] else 1
     if args.command == "decision":
         payload = load_input(args.input)
         if not isinstance(payload, dict):

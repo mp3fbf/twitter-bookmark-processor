@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sqlite3
+from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -274,6 +275,61 @@ def test_gate_fails_closed_for_an_uninitialized_database_file(tmp_path: Path) ->
     assert tables == []
 
 
+def test_operational_gate_blocks_workers_below_disk_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "automation.sqlite3"
+    _bootstrap(database)
+    DiskUsage = namedtuple("DiskUsage", "total used free")
+    free_bytes = [500]
+    monkeypatch.setattr(
+        "bookmark_automation.cli.shutil.disk_usage",
+        lambda _path: DiskUsage(total=10_000, used=9_500, free=free_bytes[0]),
+    )
+    low = io.StringIO()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "operational-gate",
+                "--path",
+                str(tmp_path),
+                "--min-free-bytes",
+                "1000",
+            ],
+            stdout=low,
+        )
+        == 1
+    )
+    assert json.loads(low.getvalue()) == {
+        "free_bytes": 500,
+        "min_free_bytes": 1000,
+        "valid": False,
+    }
+
+    free_bytes[0] = 2_000
+    healthy = io.StringIO()
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "operational-gate",
+                "--path",
+                str(tmp_path),
+                "--min-free-bytes",
+                "1000",
+            ],
+            stdout=healthy,
+        )
+        == 0
+    )
+    assert json.loads(healthy.getvalue())["valid"] is True
+
+
 def test_periodic_schedule_requires_the_exact_note_coverage_gate(tmp_path: Path) -> None:
     database = tmp_path / "automation.sqlite3"
     _bootstrap(database)
@@ -308,7 +364,7 @@ def test_periodic_schedule_requires_the_exact_note_coverage_gate(tmp_path: Path)
     )
 
 
-def test_dead_letter_listing_is_read_only_and_requeue_is_explicitly_unsupported(
+def test_dead_letter_listing_is_read_only_and_advertises_explicit_requeue(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "automation.sqlite3"
@@ -321,9 +377,263 @@ def test_dead_letter_listing_is_read_only_and_requeue_is_explicitly_unsupported(
     assert json.loads(stdout.getvalue()) == {
         "database_exists": True,
         "jobs": [],
-        "requeue_supported": False,
+        "requeue_supported": True,
     }
     assert database.stat().st_size == before
+
+
+def test_dead_letter_requeue_is_explicit_audited_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "automation.sqlite3"
+    _bootstrap(database)
+    main(
+        ["--db", str(database), "ingest", "--input", "-", "--kind", "bookmarks"],
+        stdin=io.StringIO(
+            json.dumps([{"id": "failed-bookmark", "text": "Retry after repair"}])
+        ),
+        stdout=io.StringIO(),
+    )
+    store = AutomationStore(database)
+    quick = next(job for job in store.list_jobs() if job.task_kind == "quick")
+    with store._connect() as connection:
+        connection.execute("UPDATE jobs SET state = 'dead_letter' WHERE id = ?", (quick.id,))
+
+    first_stdout = io.StringIO()
+    second_stdout = io.StringIO()
+    command = [
+        "--db",
+        str(database),
+        "dead-letter-requeue",
+        "--job-id",
+        str(quick.id),
+        "--reason",
+        "provider configuration repaired",
+    ]
+
+    assert main(command, stdout=first_stdout) == 0
+    assert main(command, stdout=second_stdout) == 0
+
+    assert json.loads(first_stdout.getvalue()) == {
+        "changed": True,
+        "job_id": quick.id,
+        "state": "pending",
+    }
+    assert json.loads(second_stdout.getvalue()) == {
+        "changed": False,
+        "job_id": quick.id,
+        "state": "pending",
+    }
+    requeued = next(job for job in AutomationStore(database).list_jobs() if job.id == quick.id)
+    assert requeued.state == "pending"
+    with store._connect() as connection:
+        actions = connection.execute(
+            "SELECT action, reason FROM operator_actions WHERE job_id = ?",
+            (quick.id,),
+        ).fetchall()
+    assert [(row["action"], row["reason"]) for row in actions] == [
+        ("dead_letter_requeue", "provider configuration repaired")
+    ]
+
+
+def test_dead_letter_requeue_preserves_frozen_aggregate_input_and_coverage(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "automation.sqlite3"
+    from bookmark_automation.service import BookmarkAutomation
+
+    store = AutomationStore(database)
+    BookmarkAutomation(store).ingest(
+        {"kind": "bookmarks", "id": "aggregate-member", "text": "Frozen input"}
+    )
+    _complete_gates(database, note_coverage=True)
+    scheduled = BookmarkAutomation(store).schedule_periodic(
+        task_kind="aggregate",
+        input_revision="2026-08-08",
+        batch_size=25,
+    )
+    aggregate_id = scheduled.job_ids[0]
+    with store._connect() as connection:
+        frozen_before = connection.execute(
+            "SELECT input_json FROM jobs WHERE id = ?",
+            (aggregate_id,),
+        ).fetchone()["input_json"]
+        coverage_before = connection.execute(
+            """
+            SELECT bookmark_id, input_revision, period_revision, job_id
+            FROM aggregate_coverage WHERE job_id = ?
+            """,
+            (aggregate_id,),
+        ).fetchall()
+        connection.execute(
+            "UPDATE jobs SET state = 'dead_letter' WHERE id = ?",
+            (aggregate_id,),
+        )
+
+    assert store.requeue_dead_letter(
+        job_id=aggregate_id,
+        reason="transient provider failure repaired",
+        now=datetime.now(UTC),
+    )
+
+    with store._connect() as connection:
+        frozen_after = connection.execute(
+            "SELECT input_json FROM jobs WHERE id = ?",
+            (aggregate_id,),
+        ).fetchone()["input_json"]
+        coverage_after = connection.execute(
+            """
+            SELECT bookmark_id, input_revision, period_revision, job_id
+            FROM aggregate_coverage WHERE job_id = ?
+            """,
+            (aggregate_id,),
+        ).fetchall()
+    assert frozen_after == frozen_before
+    assert [tuple(row) for row in coverage_after] == [tuple(row) for row in coverage_before]
+
+
+def test_committed_effect_can_be_confirmed_once_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "automation.sqlite3"
+    _bootstrap(database)
+    main(
+        ["--db", str(database), "ingest", "--input", "-", "--kind", "bookmarks"],
+        stdin=io.StringIO(json.dumps([{"id": "ambiguous-send", "text": "Maybe sent"}])),
+        stdout=io.StringIO(),
+    )
+    store = AutomationStore(database)
+    notify = next(job for job in store.list_jobs() if job.task_kind == "notify")
+    now = datetime.now(UTC)
+    with store._connect() as connection:
+        connection.execute(
+            """
+            UPDATE jobs SET state = 'leased', lease_owner = 'crashed-worker',
+                lease_until = ?, lease_token = 'expired-token' WHERE id = ?
+            """,
+            (now.isoformat(), notify.id),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts (
+                job_id, attempt_no, status, detail_json, started_at, finished_at
+            ) VALUES (?, 1, 'effect_committed', ?, ?, ?)
+            """,
+            (
+                notify.id,
+                json.dumps({"operator_action_required": True}),
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+
+    listed = io.StringIO()
+    assert main(["--db", str(database), "committed-effect-list"], stdout=listed) == 0
+    listed_payload = json.loads(listed.getvalue())
+    assert listed_payload["resolution_required"] is True
+    assert listed_payload["jobs"][0]["job_id"] == notify.id
+    assert listed_payload["jobs"][0]["task_kind"] == "notify"
+
+    command = [
+        "--db",
+        str(database),
+        "committed-effect-resolve",
+        "--job-id",
+        str(notify.id),
+        "--resolution",
+        "confirmed",
+        "--reason",
+        "Telegram showed the message",
+    ]
+    first = io.StringIO()
+    second = io.StringIO()
+    assert main(command, stdout=first) == 0
+    assert main(command, stdout=second) == 0
+    assert json.loads(first.getvalue()) == {
+        "changed": True,
+        "job_id": notify.id,
+        "state": "done",
+    }
+    assert json.loads(second.getvalue()) == {
+        "changed": False,
+        "job_id": notify.id,
+        "state": "done",
+    }
+    resolved = next(job for job in AutomationStore(database).list_jobs() if job.id == notify.id)
+    assert resolved.state == "done"
+    receipt = AutomationStore(database).receipt_payload(notify.id, "notify")
+    assert receipt is not None
+    assert receipt["status"] == "confirmed_by_operator"
+    with store._connect() as connection:
+        action = connection.execute(
+            """
+            SELECT detail_json FROM operator_actions
+            WHERE job_id = ? AND action = 'committed_effect_resolution'
+            """,
+            (notify.id,),
+        ).fetchone()
+    audit_detail = json.loads(action["detail_json"])
+    assert audit_detail["previous_detail"] == {"operator_action_required": True}
+
+
+def test_committed_effect_requeues_only_after_not_delivered_is_asserted(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "automation.sqlite3"
+    _bootstrap(database)
+    main(
+        ["--db", str(database), "ingest", "--input", "-", "--kind", "bookmarks"],
+        stdin=io.StringIO(json.dumps([{"id": "known-missed", "text": "Not sent"}])),
+        stdout=io.StringIO(),
+    )
+    store = AutomationStore(database)
+    notify = next(job for job in store.list_jobs() if job.task_kind == "notify")
+    now = datetime.now(UTC)
+    with store._connect() as connection:
+        connection.execute(
+            """
+            UPDATE jobs SET state = 'leased', lease_owner = 'crashed-worker',
+                lease_until = ?, lease_token = 'expired-token' WHERE id = ?
+            """,
+            (now.isoformat(), notify.id),
+        )
+        connection.execute(
+            """
+            INSERT INTO attempts (job_id, attempt_no, status, started_at)
+            VALUES (?, 1, 'effect_committed', ?)
+            """,
+            (notify.id, now.isoformat()),
+        )
+
+    stdout = io.StringIO()
+    assert (
+        main(
+            [
+                "--db",
+                str(database),
+                "committed-effect-resolve",
+                "--job-id",
+                str(notify.id),
+                "--resolution",
+                "not-delivered",
+                "--reason",
+                "Bot API request never left the host",
+            ],
+            stdout=stdout,
+        )
+        == 0
+    )
+
+    assert json.loads(stdout.getvalue())["state"] == "pending"
+    resolved = next(job for job in AutomationStore(database).list_jobs() if job.id == notify.id)
+    assert resolved.state == "pending"
+    assert AutomationStore(database).receipt_payload(notify.id, "notify") is None
+    with store._connect() as connection:
+        attempt = connection.execute(
+            "SELECT status FROM attempts WHERE job_id = ?",
+            (notify.id,),
+        ).fetchone()
+    assert attempt["status"] == "resolved_not_delivered"
 
 
 def test_ingest_cli_accepts_json_batch_from_stdin_and_ignores_likes(tmp_path: Path) -> None:
