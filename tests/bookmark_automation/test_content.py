@@ -616,3 +616,15 @@ def test_second_brain_recall_timeout_is_typed_and_retryable() -> None:
 
     assert captured.value.code == "recall_timeout"
     assert captured.value.retryable is True
+
+
+def test_second_brain_recall_default_timeout_covers_long_production_queries() -> None:
+    observed: dict[str, Any] = {}
+
+    def runner(_command: list[str], **kwargs: Any) -> Any:
+        observed.update(kwargs)
+        return SimpleNamespace(stdout="[]")
+
+    recall_second_brain("a bounded but long production query", runner=runner)
+
+    assert observed["timeout"] == 30.0

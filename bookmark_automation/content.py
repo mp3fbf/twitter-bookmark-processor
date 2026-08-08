@@ -555,7 +555,7 @@ def recall_second_brain(
     query: str,
     *,
     limit: int = 12,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     runner: Callable[..., Any] = subprocess.run,
     script_path: str | Path = "/workspace/_scripts/memory/recall.py",
 ) -> RecallResult:
