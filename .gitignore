@@ -73,4 +73,7 @@ data/content_packages/
 data/x_api_tokens.json
 data/state.json
 data/insight_state.json
+# Personal SQLite/WAL/markers and saved media (never version).
+data/bookmark-automation.sqlite3*
+data/videos/
 *.log

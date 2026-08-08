@@ -1,0 +1,13 @@
+[Unit]
+Description=Import Twitter bookmark decisions every 15 seconds
+
+[Timer]
+OnBootSec=25s
+OnUnitActiveSec=15s
+AccuracySec=2s
+RandomizedDelaySec=1s
+Persistent=true
+Unit=bookmark-automation-decisions.service
+
+[Install]
+WantedBy=timers.target

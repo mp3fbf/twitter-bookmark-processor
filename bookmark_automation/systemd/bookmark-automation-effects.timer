@@ -1,0 +1,13 @@
+[Unit]
+Description=Drain deterministic Twitter bookmark effects every 15 seconds
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=15s
+AccuracySec=2s
+RandomizedDelaySec=1s
+Persistent=true
+Unit=bookmark-automation-effects.service
+
+[Install]
+WantedBy=timers.target

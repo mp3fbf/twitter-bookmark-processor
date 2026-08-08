@@ -1,0 +1,12 @@
+[Unit]
+Description=Reconcile all Twitter bookmarks daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Sao_Paulo
+AccuracySec=5m
+RandomizedDelaySec=2m
+Persistent=true
+Unit=bookmark-automation-reconcile.service
+
+[Install]
+WantedBy=timers.target
