@@ -152,7 +152,12 @@ class TelegramClient:
             )
         return payload.get("result") or {}
 
-    def send_message(self, message: TelegramMessage) -> TelegramReceipt:
+    def send_message(
+        self,
+        message: TelegramMessage,
+        *,
+        before_send: Callable[[], None] | None = None,
+    ) -> TelegramReceipt:
         payload: dict[str, Any] = {
             "chat_id": self.chat_id,
             "text": message.text,
@@ -160,6 +165,8 @@ class TelegramClient:
         }
         if message.reply_markup is not None:
             payload["reply_markup"] = message.reply_markup
+        if before_send is not None:
+            before_send()
         response = self._post(
             "sendMessage",
             json=payload,
@@ -177,6 +184,7 @@ class TelegramClient:
         path: str | Path,
         *,
         transcoder: Callable[[Path, Path, int], Path] | None = None,
+        before_send: Callable[[], None] | None = None,
     ) -> TelegramReceipt:
         source = Path(path)
         size = source.stat().st_size
@@ -196,6 +204,8 @@ class TelegramClient:
             for chunk in iter(lambda: source_for_hash.read(1024 * 1024), b""):
                 digest.update(chunk)
         with source.open("rb") as handle:
+            if before_send is not None:
+                before_send()
             response = self._post(
                 "sendDocument",
                 data={"chat_id": self.chat_id},

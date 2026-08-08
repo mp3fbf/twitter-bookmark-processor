@@ -123,6 +123,34 @@ def test_bird_json_full_x_article_accepts_nested_body_text_shape() -> None:
     assert article.text == "Nested full body."
 
 
+def test_bird_json_full_x_article_raw_body_wins_over_top_level_teaser() -> None:
+    article = fetch_article(
+        {
+            "id": "1900000000000000023",
+            "text": "A teaser that is not the article title.",
+            "article": {
+                "title": "Durable agent memory",
+                "previewText": "A short preview.",
+            },
+            "_raw": {
+                "article": {
+                    "article_results": {
+                        "result": {
+                            "body": {
+                                "text": "The complete article body arrived later."
+                            }
+                        }
+                    }
+                }
+            },
+        },
+        http_get=lambda *_args, **_kwargs: pytest.fail("network must not be used"),
+    )
+
+    assert article.text == "The complete article body arrived later."
+    assert article.truncated is False
+
+
 def test_embedded_x_article_accepts_body_inside_article_metadata() -> None:
     article = fetch_article(
         {

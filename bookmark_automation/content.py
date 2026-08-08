@@ -275,6 +275,31 @@ def _clean(value: str | None) -> str | None:
     return cleaned or None
 
 
+def embedded_x_article_raw_text(payload: Mapping[str, Any]) -> str | None:
+    """Return only the stable raw X Article body consumed by extraction."""
+    if not isinstance(payload.get("article"), Mapping):
+        return None
+    raw = payload.get("_raw")
+    raw_article = raw.get("article") if isinstance(raw, Mapping) else None
+    raw_result = (
+        raw_article.get("article_results", {}).get("result")
+        if isinstance(raw_article, Mapping)
+        and isinstance(raw_article.get("article_results"), Mapping)
+        else None
+    )
+    if not isinstance(raw_result, Mapping):
+        return None
+    raw_body = raw_result.get("body")
+    for candidate in (
+        raw_result.get("plain_text"),
+        raw_result.get("text"),
+        raw_body.get("text") if isinstance(raw_body, Mapping) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
 def _meta_content(soup: Any, selectors: Sequence[dict[str, str]]) -> str | None:
     for selector in selectors:
         tag = soup.find("meta", attrs=selector)
@@ -340,38 +365,22 @@ def _extract_embedded_x_article(
     if not isinstance(article, Mapping):
         return None
     title = _clean(article.get("title") if isinstance(article.get("title"), str) else None)
-    body = payload.get("text")
-    if isinstance(body, str) and title is not None and _clean(body) == title:
-        body = None
+    body: Any = None
+    article_body = article.get("body")
+    for candidate in (
+        article.get("plain_text"),
+        article.get("text"),
+        article_body.get("text") if isinstance(article_body, Mapping) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            body = candidate
+            break
     if not isinstance(body, str) or not body.strip():
-        article_body = article.get("body")
-        for candidate in (
-            article.get("plain_text"),
-            article.get("text"),
-            article_body.get("text") if isinstance(article_body, Mapping) else None,
-        ):
-            if isinstance(candidate, str) and candidate.strip():
-                body = candidate
-                break
+        body = embedded_x_article_raw_text(payload)
     if not isinstance(body, str) or not body.strip():
-        raw = payload.get("_raw")
-        raw_article = raw.get("article") if isinstance(raw, Mapping) else None
-        raw_result = (
-            raw_article.get("article_results", {}).get("result")
-            if isinstance(raw_article, Mapping)
-            and isinstance(raw_article.get("article_results"), Mapping)
-            else None
-        )
-        if isinstance(raw_result, Mapping):
-            raw_body = raw_result.get("body")
-            for candidate in (
-                raw_result.get("plain_text"),
-                raw_result.get("text"),
-                raw_body.get("text") if isinstance(raw_body, Mapping) else None,
-            ):
-                if isinstance(candidate, str) and candidate.strip():
-                    body = candidate
-                    break
+        body = payload.get("text")
+        if isinstance(body, str) and title is not None and _clean(body) == title:
+            body = None
     preview_only = False
     if not isinstance(body, str) or not body.strip():
         body = article.get("previewText")

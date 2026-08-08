@@ -166,6 +166,155 @@ def test_skip_cancels_future_semantic_work_but_not_delivery_jobs(tmp_path: Path)
     assert states["deliver_video"] == "pending"
 
 
+def test_skip_remains_sticky_across_semantic_revisions_until_user_reactivates(
+    tmp_path: Path,
+) -> None:
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    now = datetime(2026, 8, 8, 15, 2, tzinfo=UTC)
+    automation = BookmarkAutomation(store, clock=lambda: now)
+    bookmark_id = "1900000000000000030"
+    base = {
+        "kind": "bookmarks",
+        "id": bookmark_id,
+        "text": "A teaser that is not the article title.",
+        "hasVideo": True,
+        "article": {
+            "title": "Durable agent memory",
+            "previewText": "A short preview.",
+        },
+    }
+    automation.ingest(base)
+    automation.decide(
+        bookmark_id=bookmark_id,
+        action="skip",
+        decision_id="telegram-update-4013",
+    )
+
+    automation.ingest(
+        {
+            **base,
+            "_raw": {
+                "article": {
+                    "article_results": {
+                        "result": {"body": {"text": "The complete article body."}}
+                    }
+                }
+            },
+        }
+    )
+
+    jobs = store.list_jobs()
+    revisions = sorted({job.input_revision for job in jobs})
+    assert len(revisions) == 2
+    current_revision = max(
+        (job for job in jobs if job.task_kind == "fetch_article"),
+        key=lambda job: job.id,
+    ).input_revision
+    current_semantic = {
+        job.task_kind: job
+        for job in jobs
+        if job.input_revision == current_revision
+        and job.task_kind in {"quick", "fetch_article", "recall_context", "deep"}
+    }
+    assert set(current_semantic) == {
+        "quick",
+        "fetch_article",
+        "recall_context",
+        "deep",
+    }
+    assert {job.state for job in current_semantic.values()} == {"cancelled"}
+    assert [job.task_kind for job in jobs].count("notify") == 1
+    assert [job.task_kind for job in jobs].count("deliver_video") == 1
+    aggregate_schedule = automation.schedule_periodic(
+        task_kind="aggregate",
+        input_revision="period:2026-08-08",
+    )
+    assert len(aggregate_schedule.results) == 1
+    aggregate_job = next(
+        job
+        for job in store.list_jobs()
+        if job.id == aggregate_schedule.results[0].job_id
+    )
+    assert store.job_payload(aggregate_job)["coverage"] == {
+        "input_count": 1,
+        "bookmark_ids": [bookmark_id],
+    }
+    assert automation.schedule_periodic(
+        task_kind="backlog",
+        input_revision="backlog:2026-08-08",
+    ).results == ()
+    assert (
+        store.lease_next(
+            worker_id="must-stay-ignored",
+            now=now + timedelta(hours=1),
+            lease_for=timedelta(minutes=1),
+            task_kinds={"quick", "fetch_article", "recall_context", "deep"},
+        )
+        is None
+    )
+
+    automation.decide(
+        bookmark_id=bookmark_id,
+        action="act",
+        decision_id="telegram-update-4014",
+    )
+
+    reactivated = {
+        job.task_kind: job
+        for job in store.list_jobs()
+        if job.input_revision == current_revision
+        and job.task_kind in {"quick", "fetch_article", "recall_context", "deep"}
+    }
+    assert {job.state for job in reactivated.values()} == {"pending"}
+    assert reactivated["deep"].available_at == now.isoformat()
+
+
+def test_skip_fences_direct_semantic_enqueue_for_a_later_simple_tweet_revision(
+    tmp_path: Path,
+) -> None:
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    now = datetime(2026, 8, 8, 15, 3, tzinfo=UTC)
+    automation = BookmarkAutomation(store, clock=lambda: now)
+    bookmark_id = "1900000000000000031"
+    automation.ingest(
+        {"kind": "bookmarks", "id": bookmark_id, "text": "Initial thought"}
+    )
+    automation.decide(
+        bookmark_id=bookmark_id,
+        action="skip",
+        decision_id="telegram-update-4015",
+    )
+    automation.ingest(
+        {"kind": "bookmarks", "id": bookmark_id, "text": "Richer thought"}
+    )
+    current_revision = max(
+        (job for job in store.list_jobs() if job.task_kind == "quick"),
+        key=lambda job: job.id,
+    ).input_revision
+
+    queued = store.enqueue_job(
+        bookmark_id=bookmark_id,
+        task_kind="deep",
+        input_revision=current_revision,
+        profile="deep",
+        priority=100,
+        now=now,
+        input_json='{"bookmark":{"id":"1900000000000000031"}}',
+    )
+
+    deep = next(job for job in store.list_jobs() if job.id == queued.job_id)
+    assert deep.state == "cancelled"
+    with sqlite3.connect(store.path) as connection:
+        cancel_requested = connection.execute(
+            "SELECT cancel_requested FROM jobs WHERE id = ?", (deep.id,)
+        ).fetchone()[0]
+    assert cancel_requested == 1
+    assert automation.schedule_periodic(
+        task_kind="backlog",
+        input_revision="backlog:2026-08-08",
+    ).results == ()
+
+
 def test_keep_confirms_normal_deep_schedule_without_accelerating_it(tmp_path: Path) -> None:
     store = AutomationStore(tmp_path / "automation.sqlite3")
     now = datetime(2026, 8, 8, 15, 0, tzinfo=UTC)

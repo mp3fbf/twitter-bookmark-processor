@@ -28,9 +28,20 @@ from .store import AutomationStore, Job, LeaseLostError
 
 
 class TelegramSender(Protocol):
-    def send_message(self, message: TelegramMessage) -> Any: ...
+    def send_message(
+        self,
+        message: TelegramMessage,
+        *,
+        before_send: Callable[[], None] | None = None,
+    ) -> Any: ...
 
-    def send_document(self, path: str | Path, **kwargs: Any) -> Any: ...
+    def send_document(
+        self,
+        path: str | Path,
+        *,
+        before_send: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -118,34 +129,54 @@ class EffectWorker:
             )
         except LeaseLostError:
             return EffectOutcome(job_id=job.id, status="lease_lost")
-        try:
-            payload = self.store.job_payload(job)
-            if job.task_kind in self.IRREVERSIBLE_TASK_KINDS:
-                self.store.mark_effect_committed(
-                    job_id=job.id,
-                    attempt_id=attempt_id,
-                    worker_id=self.worker_id,
-                    lease_token=job.lease_token,
-                    now=self._completion_now(now, started_monotonic),
+        payload = self.store.job_payload(job)
+        effect_committed = False
+
+        def commit_effect() -> None:
+            nonlocal effect_committed
+            if effect_committed:
+                return
+            if job.task_kind not in self.IRREVERSIBLE_TASK_KINDS:
+                raise RuntimeError(
+                    f"task cannot cross an effect boundary: {job.task_kind}"
                 )
+            self.store.mark_effect_committed(
+                job_id=job.id,
+                attempt_id=attempt_id,
+                worker_id=self.worker_id,
+                lease_token=job.lease_token,
+                now=self._completion_now(now, started_monotonic),
+            )
+            effect_committed = True
+
+        try:
+            result = self._execute(
+                job.task_kind,
+                payload,
+                job,
+                commit_effect=commit_effect,
+            )
         except LeaseLostError:
             return EffectOutcome(job_id=job.id, status="lease_lost")
-        try:
-            result = self._execute(job.task_kind, payload, job)
         except Exception as exc:  # noqa: BLE001 - converted into durable retry state
             completion_now = self._completion_now(now, started_monotonic)
             explicitly_retryable = getattr(exc, "retryable", None)
-            retryable = (
+            classified_retryable = (
                 bool(explicitly_retryable)
                 if explicitly_retryable is not None
-                else not isinstance(exc, (KeyError, NotImplementedError, TypeError, ValueError))
+                else not isinstance(
+                    exc,
+                    (KeyError, NotImplementedError, TypeError, ValueError),
+                )
             )
+            retryable = classified_retryable and not effect_committed
             detail = json.dumps(
                 {
-                    "status": "failed",
+                    "status": "effect_committed" if effect_committed else "failed",
                     "error_type": type(exc).__name__,
                     "code": getattr(exc, "code", "effect_failed"),
                     "retryable": retryable,
+                    "operator_action_required": effect_committed,
                 },
                 sort_keys=True,
             )
@@ -184,9 +215,20 @@ class EffectWorker:
         elapsed_seconds = max(0, int(self.monotonic() - started_monotonic))
         return started_at + timedelta(seconds=elapsed_seconds)
 
-    def _execute(self, task_kind: str, payload: dict[str, Any], job: Job) -> dict[str, Any]:
+    def _execute(
+        self,
+        task_kind: str,
+        payload: dict[str, Any],
+        job: Job,
+        *,
+        commit_effect: Callable[[], None],
+    ) -> dict[str, Any]:
         if task_kind == "notify":
-            receipt = self.telegram.send_message(build_bookmark_notification(payload))
+            message = build_bookmark_notification(payload)
+            receipt = self.telegram.send_message(
+                message,
+                before_send=commit_effect,
+            )
             return {
                 "status": "delivered",
                 **{key: value for key, value in asdict(receipt).items() if value is not None},
@@ -196,6 +238,7 @@ class EffectWorker:
             delivered = self.telegram.send_document(
                 video.path,
                 transcoder=self.transcode_video,
+                before_send=commit_effect,
             )
             return {
                 "status": "delivered",
@@ -215,6 +258,7 @@ class EffectWorker:
             recalled = self.recall_context(self.store.recall_query(job))
             return {"status": "available", **asdict(recalled)}
         if task_kind == "write_source_note":
+            commit_effect()
             note = write_source_note(payload, self.note_dir)
             return {
                 "status": "written" if note.created else "exists",
@@ -228,7 +272,10 @@ class EffectWorker:
                 if task_kind == "send_deep"
                 else build_aggregate_message(payload)
             )
-            receipt = self.telegram.send_message(message)
+            receipt = self.telegram.send_message(
+                message,
+                before_send=commit_effect,
+            )
             return {
                 "status": "delivered",
                 **{key: value for key, value in asdict(receipt).items() if value is not None},

@@ -15,6 +15,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+_SEMANTIC_TASK_KINDS = (
+    "quick",
+    "fetch_article",
+    "recall_context",
+    "deep",
+    "write_source_note",
+    "send_deep",
+)
+
+
 @dataclass(frozen=True)
 class Job:
     id: int
@@ -157,6 +167,23 @@ class AutomationStore:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.row_factory = sqlite3.Row
         return connection
+
+    @staticmethod
+    def _latest_decision_action(
+        connection: sqlite3.Connection,
+        bookmark_id: str,
+    ) -> str | None:
+        row = connection.execute(
+            """
+            SELECT action
+            FROM decisions
+            WHERE bookmark_id = ?
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (bookmark_id,),
+        ).fetchone()
+        return None if row is None else str(row["action"])
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -405,6 +432,9 @@ class AutomationStore:
                 if existing is None
                 else bool(existing["capture_effects_allowed"])
             )
+            semantic_paused = (
+                self._latest_decision_action(connection, bookmark_id) == "skip"
+            )
             video_job = connection.execute(
                 """
                 SELECT id, state FROM jobs
@@ -486,8 +516,8 @@ class AutomationStore:
                     """
                     INSERT OR IGNORE INTO jobs (
                         bookmark_id, task_kind, input_revision, profile, input_json,
-                        priority, state, available_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                        priority, state, available_at, cancel_requested, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         bookmark_id,
@@ -496,7 +526,15 @@ class AutomationStore:
                         job["profile"],
                         payload_json,
                         job["priority"],
+                        (
+                            "cancelled"
+                            if semantic_paused and task_kind in _SEMANTIC_TASK_KINDS
+                            else "pending"
+                        ),
                         job.get("available_at", created_at),
+                        int(
+                            semantic_paused and task_kind in _SEMANTIC_TASK_KINDS
+                        ),
                         created_at,
                     ),
                 )
@@ -804,12 +842,17 @@ class AutomationStore:
     ) -> EnqueueResult:
         now_text = now.isoformat()
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            semantic_paused = (
+                self._latest_decision_action(connection, bookmark_id) == "skip"
+                and task_kind in _SEMANTIC_TASK_KINDS
+            )
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO jobs (
                     bookmark_id, task_kind, input_revision, profile, input_json,
-                    priority, state, available_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    priority, state, available_at, cancel_requested, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bookmark_id,
@@ -818,7 +861,9 @@ class AutomationStore:
                     profile,
                     input_json,
                     priority,
+                    "cancelled" if semantic_paused else "pending",
                     now_text,
+                    int(semantic_paused),
                     now_text,
                 ),
             )
@@ -1352,7 +1397,15 @@ class AutomationStore:
         with self._connect() as connection:
             bookmark_rows = connection.execute(
                 """
-                SELECT bookmark_id, input_revision, payload_json
+                SELECT bookmarks.bookmark_id, bookmarks.input_revision,
+                       bookmarks.payload_json,
+                       (
+                           SELECT decisions.action
+                           FROM decisions
+                           WHERE decisions.bookmark_id = bookmarks.bookmark_id
+                           ORDER BY decisions.rowid DESC
+                           LIMIT 1
+                       ) AS latest_action
                 FROM bookmarks
                 ORDER BY created_at ASC, bookmark_id ASC
                 """
@@ -1408,6 +1461,8 @@ class AutomationStore:
             )
         items: list[dict[str, Any]] = []
         for row in bookmark_rows:
+            if task_kind == "backlog" and row["latest_action"] == "skip":
+                continue
             key = (str(row["bookmark_id"]), str(row["input_revision"]))
             upstream = upstream_by_bookmark.get(key, {})
             if task_kind == "aggregate" and key in aggregate_covered:
@@ -1790,6 +1845,21 @@ class AutomationStore:
                 lease_token=lease_token,
                 now=now,
             )
+            attempt = connection.execute(
+                "SELECT status FROM attempts WHERE id = ? AND job_id = ?",
+                (attempt_id, job_id),
+            ).fetchone()
+            if attempt["status"] == "effect_committed":
+                connection.execute(
+                    """
+                    UPDATE attempts
+                    SET detail_json = ?, finished_at = ?
+                    WHERE id = ? AND job_id = ?
+                      AND status = 'effect_committed'
+                    """,
+                    (detail_json, now.isoformat(), attempt_id, job_id),
+                )
+                return "effect_committed"
             connection.execute(
                 """
                 UPDATE attempts

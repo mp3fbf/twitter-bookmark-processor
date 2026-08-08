@@ -159,6 +159,23 @@ def test_telegram_message_omits_reply_markup_when_there_are_no_buttons() -> None
     assert "reply_markup" not in calls[0]["json"]
 
 
+def test_telegram_message_crosses_commit_boundary_immediately_before_transport() -> None:
+    events: list[str] = []
+
+    def post(_url: str, **_kwargs: Any) -> FakeResponse:
+        events.append("transport")
+        return FakeResponse({"ok": True, "result": {"message_id": 44}})
+
+    client = TelegramClient(token="test-token", chat_id="123", http_post=post)
+
+    client.send_message(
+        TelegramMessage(text="Commit just before sending"),
+        before_send=lambda: events.append("commit"),
+    )
+
+    assert events == ["commit", "transport"]
+
+
 def test_telegram_credentials_can_come_from_injected_environment() -> None:
     calls: list[str] = []
 
@@ -627,6 +644,38 @@ def test_oversized_video_is_transcoded_to_separate_copy_before_telegram(
     assert transcoder_calls == [(original, tmp_path / "1900000000000000007.telegram.mp4", 10)]
     assert receipt.delivered_path == str(tmp_path / "1900000000000000007.telegram.mp4")
     assert receipt.size_bytes == 5
+
+
+def test_document_crosses_commit_boundary_after_transcode_before_transport(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "commit-boundary.mp4"
+    original.write_bytes(b"original-is-too-large")
+    events: list[str] = []
+
+    def transcoder(_source: Path, target: Path, _limit: int) -> Path:
+        events.append("transcode")
+        target.write_bytes(b"small")
+        return target
+
+    def post(_url: str, **_kwargs: Any) -> FakeResponse:
+        events.append("transport")
+        return FakeResponse({"ok": True, "result": {"message_id": 45}})
+
+    client = TelegramClient(
+        token="test-token",
+        chat_id="123",
+        http_post=post,
+        max_document_bytes=10,
+    )
+
+    client.send_document(
+        original,
+        transcoder=transcoder,
+        before_send=lambda: events.append("commit"),
+    )
+
+    assert events == ["transcode", "commit", "transport"]
 
 
 def test_ffmpeg_transcoder_is_injectable_and_writes_target_atomically(tmp_path: Path) -> None:

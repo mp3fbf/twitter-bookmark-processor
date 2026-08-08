@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping
 
+from .content import embedded_x_article_raw_text
 from .store import AutomationStore, EnqueueResult
 from .store import DecisionResult as StoreDecisionResult
 
@@ -35,6 +36,18 @@ def _stable_input(value: Any) -> Any:
     if isinstance(value, list):
         return [_stable_input(item) for item in value]
     return value
+
+
+def _revision_input(event: Mapping[str, Any]) -> dict[str, Any]:
+    stable = _stable_input(event)
+    if not isinstance(stable, dict):
+        raise TypeError("bookmark revision input must be an object")
+    raw_article_text = embedded_x_article_raw_text(event)
+    if raw_article_text is not None:
+        stable["_raw_article_body_sha256"] = hashlib.sha256(
+            raw_article_text.encode("utf-8")
+        ).hexdigest()
+    return stable
 
 
 @dataclass(frozen=True)
@@ -94,7 +107,7 @@ class BookmarkAutomation:
             raise ValueError("bookmark event requires a non-empty id")
         payload_json = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         revision_json = json.dumps(
-            _stable_input(event),
+            _revision_input(event),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from bookmark_automation.content import fetch_article
 from bookmark_automation.service import BookmarkAutomation
 from bookmark_automation.store import AutomationStore
 
@@ -187,13 +188,6 @@ def test_richer_video_revision_revives_the_same_exhausted_delivery_job(
         lease_token=claim.lease_token,
         now=now,
     )
-    store.mark_effect_committed(
-        job_id=claim.id,
-        attempt_id=attempt_id,
-        worker_id="video-worker",
-        lease_token=claim.lease_token,
-        now=now,
-    )
     assert (
         store.complete_failure(
             job_id=claim.id,
@@ -252,4 +246,85 @@ def test_volatile_engagement_metrics_do_not_create_a_new_input_revision(tmp_path
     )
 
     assert metrics_only_change.created is False
+    assert store.count("jobs") == 3
+
+
+def test_raw_article_body_enrichment_creates_semantic_revision_without_capture_replay(
+    tmp_path: Path,
+) -> None:
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    automation = BookmarkAutomation(store)
+    bookmark_id = "1900000000000000099"
+    base = {
+        "kind": "bookmarks",
+        "id": bookmark_id,
+        "text": "X Article",
+        "article": {
+            "title": "Durable agent memory",
+            "previewText": "A short preview",
+        },
+    }
+
+    first = automation.ingest(base)
+    enriched = automation.ingest(
+        {
+            **base,
+            "_raw": {
+                "article": {
+                    "article_results": {
+                        "result": {
+                            "body": {
+                                "text": "The complete article body arrived later."
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+
+    assert first.created is True
+    assert enriched.created is True
+    jobs = store.list_jobs()
+    assert len({job.input_revision for job in jobs}) == 2
+    assert [job.task_kind for job in jobs].count("notify") == 1
+    assert [job.task_kind for job in jobs].count("fetch_article") == 2
+    assert [job.task_kind for job in jobs].count("quick") == 2
+    assert [job.task_kind for job in jobs].count("recall_context") == 2
+    assert [job.task_kind for job in jobs].count("deep") == 2
+    latest_fetch = max(
+        (job for job in jobs if job.task_kind == "fetch_article"),
+        key=lambda job: job.id,
+    )
+    assert (
+        store.job_payload(latest_fetch)["_raw"]["article"]["article_results"]
+        ["result"]["body"]["text"]
+        == "The complete article body arrived later."
+    )
+    article = fetch_article(
+        store.job_payload(latest_fetch),
+        http_get=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("embedded X Article must not use the network")
+        ),
+    )
+    assert article.text == "The complete article body arrived later."
+
+
+def test_irrelevant_raw_metadata_does_not_create_a_semantic_revision(
+    tmp_path: Path,
+) -> None:
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    automation = BookmarkAutomation(store)
+    base = {
+        "kind": "bookmarks",
+        "id": "1900000000000000098",
+        "text": "Stable source content",
+    }
+
+    automation.ingest({**base, "_raw": {"view_count": 10}})
+    changed_metric = automation.ingest(
+        {**base, "_raw": {"view_count": 11, "request_id": "volatile"}}
+    )
+
+    assert changed_metric.created is False
     assert store.count("jobs") == 3

@@ -19,7 +19,14 @@ class RecordingTelegram:
         self.messages: list[Any] = []
         self.documents: list[Path] = []
 
-    def send_message(self, message: Any) -> TelegramReceipt:
+    def send_message(
+        self,
+        message: Any,
+        *,
+        before_send: Any | None = None,
+    ) -> TelegramReceipt:
+        if before_send is not None:
+            before_send()
         self.messages.append(message)
         return TelegramReceipt(
             method="sendMessage",
@@ -27,7 +34,15 @@ class RecordingTelegram:
             message_id=len(self.messages),
         )
 
-    def send_document(self, path: str | Path, **_kwargs: Any) -> TelegramReceipt:
+    def send_document(
+        self,
+        path: str | Path,
+        *,
+        before_send: Any | None = None,
+        **_kwargs: Any,
+    ) -> TelegramReceipt:
+        if before_send is not None:
+            before_send()
         document = Path(path)
         self.documents.append(document)
         return TelegramReceipt(
@@ -77,6 +92,68 @@ def test_effect_worker_delivers_notification_once_and_records_receipt(
         "status": "delivered",
     }
     assert store.count("attempts") == 1
+
+
+def test_ambiguous_telegram_failure_remains_committed_and_is_never_replayed(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 8, 13, 5, tzinfo=UTC)
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    BookmarkAutomation(store, clock=lambda: now).ingest(
+        {
+            "kind": "bookmarks",
+            "id": "1900000000000000199",
+            "text": "Telegram may accept this before the client times out",
+        }
+    )
+
+    class AcceptThenTimeoutTelegram(RecordingTelegram):
+        def send_message(
+            self,
+            message: Any,
+            *,
+            before_send: Any | None = None,
+        ) -> TelegramReceipt:
+            if before_send is not None:
+                before_send()
+            self.messages.append(message)
+            raise ExternalEffectError(
+                "simulated timeout after acceptance",
+                code="telegram_transport_failed",
+                retryable=True,
+            )
+
+    telegram = AcceptThenTimeoutTelegram()
+    worker = EffectWorker(
+        store=store,
+        telegram=telegram,
+        worker_id="effect-test",
+        video_dir=tmp_path / "videos",
+        note_dir=tmp_path / "notes",
+        failure_backoff=timedelta(0),
+    )
+
+    outcome = worker.run_once(now=now, task_kinds={"notify"})
+    replay = worker.run_once(
+        now=now + timedelta(hours=1), task_kinds={"notify"}
+    )
+
+    assert outcome is not None and outcome.status == "effect_committed"
+    assert replay is None
+    assert len(telegram.messages) == 1
+    notify = next(job for job in store.list_jobs() if job.task_kind == "notify")
+    assert notify.state == "leased"
+    assert store.receipt_payload(notify.id, "notify") is None
+    assert store.status_snapshot()["committed_effects"] == 1
+    with store._connect() as connection:
+        attempt = connection.execute(
+            "SELECT status, detail_json FROM attempts WHERE job_id = ?",
+            (notify.id,),
+        ).fetchone()
+    assert attempt["status"] == "effect_committed"
+    assert json.loads(attempt["detail_json"])["code"] == (
+        "telegram_transport_failed"
+    )
 
 
 def test_effect_worker_downloads_and_sends_video_without_waiting_for_decision(
@@ -137,6 +214,50 @@ def test_effect_worker_downloads_and_sends_video_without_waiting_for_decision(
     assert receipt["status"] == "delivered"
     assert receipt["source_sha256"] == "video-sha"
     assert receipt["telegram_message_id"] == 101
+
+
+def test_video_download_failure_before_commit_remains_retryable(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 8, 13, 15, tzinfo=UTC)
+    store = AutomationStore(tmp_path / "automation.sqlite3")
+    BookmarkAutomation(store, clock=lambda: now).ingest(
+        {
+            "kind": "bookmarks",
+            "id": "1900000000000000198",
+            "text": "Video metadata is still resolving",
+            "hasVideo": True,
+        }
+    )
+
+    def unavailable_download(
+        _payload: dict[str, Any],
+        _destination: Path,
+    ) -> VideoReceipt:
+        raise ExternalEffectError(
+            "video URL unavailable",
+            code="video_url_unavailable",
+            retryable=True,
+        )
+
+    worker = EffectWorker(
+        store=store,
+        telegram=RecordingTelegram(),
+        worker_id="effect-test",
+        video_dir=tmp_path / "videos",
+        note_dir=tmp_path / "notes",
+        download_video=unavailable_download,
+        failure_backoff=timedelta(0),
+    )
+
+    outcome = worker.run_once(now=now, task_kinds={"deliver_video"})
+
+    assert outcome is not None and outcome.status == "pending"
+    video = next(
+        job for job in store.list_jobs() if job.task_kind == "deliver_video"
+    )
+    assert video.state == "pending"
+    assert store.status_snapshot()["committed_effects"] == 0
 
 
 def test_effect_worker_captures_article_and_local_recall_as_separate_receipts(
@@ -464,7 +585,7 @@ def test_skip_after_source_note_effect_commit_preserves_receipt(
     assert Path(receipt["path"]).is_file()
 
 
-def test_skip_after_effect_commit_cancels_retry_when_effect_fails(
+def test_skip_after_effect_commit_preserves_ambiguous_failure_for_audit(
     tmp_path: Path,
 ) -> None:
     now = datetime(2026, 8, 8, 13, 46, tzinfo=UTC)
@@ -494,7 +615,14 @@ def test_skip_after_effect_commit_cancels_retry_when_effect_fails(
     )
 
     class SkipThenFailTelegram(RecordingTelegram):
-        def send_message(self, message: Any) -> TelegramReceipt:
+        def send_message(
+            self,
+            message: Any,
+            *,
+            before_send: Any | None = None,
+        ) -> TelegramReceipt:
+            if before_send is not None:
+                before_send()
             automation.decide(
                 bookmark_id=bookmark_id,
                 action="skip",
@@ -520,11 +648,12 @@ def test_skip_after_effect_commit_cancels_retry_when_effect_fails(
         now=now + timedelta(seconds=1), task_kinds={"send_deep"}
     )
 
-    assert outcome is not None and outcome.status == "cancelled"
+    assert outcome is not None and outcome.status == "effect_committed"
     assert replay is None
     source_job = next(job for job in store.list_jobs() if job.id == queued.job_id)
-    assert source_job.state == "cancelled"
+    assert source_job.state == "leased"
     assert store.receipt_payload(queued.job_id, "send_deep") is None
+    assert store.status_snapshot()["committed_effects"] == 1
 
 
 def test_effect_worker_sends_the_aggregate_digest_from_a_frozen_payload(
