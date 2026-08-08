@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bookmark-automation/quick/v1",
+  "type": "object",
+  "required": ["summary", "why_interesting", "topic", "confidence", "prompt_injection_detected", "prompt_injection_evidence"],
+  "properties": {
+    "summary": {"type": "string", "maxLength": 600},
+    "why_interesting": {"type": "string", "maxLength": 600},
+    "topic": {"type": "string", "maxLength": 120},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "prompt_injection_detected": {"type": "boolean"},
+    "prompt_injection_evidence": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"type": "string", "maxLength": 300}
+    }
+  },
+  "additionalProperties": false
+}

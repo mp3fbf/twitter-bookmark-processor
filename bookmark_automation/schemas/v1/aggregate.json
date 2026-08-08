@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bookmark-automation/aggregate/v1",
+  "type": "object",
+  "required": ["themes", "changes", "open_questions", "follow_ups", "coverage", "ranked_bookmarks", "promotion_candidates", "archive_candidates", "prompt_injection_detected", "prompt_injection_evidence"],
+  "properties": {
+    "themes": {"type": "array", "items": {"type": "string"}},
+    "changes": {"type": "array", "items": {"type": "string"}},
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "follow_ups": {"type": "array", "items": {"type": "string"}},
+    "coverage": {
+      "type": "object",
+      "required": ["input_count", "processed_bookmark_ids", "omitted_bookmark_ids"],
+      "properties": {
+        "input_count": {"type": "integer", "minimum": 0},
+        "processed_bookmark_ids": {"type": "array", "items": {"type": "string"}},
+        "omitted_bookmark_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "ranked_bookmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["bookmark_id", "relevance", "reason"],
+        "properties": {
+          "bookmark_id": {"type": "string"},
+          "relevance": {"type": "number", "minimum": 0, "maximum": 1},
+          "reason": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "promotion_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["concept", "bookmark_ids", "rationale"],
+        "properties": {
+          "concept": {"type": "string"},
+          "bookmark_ids": {"type": "array", "items": {"type": "string"}},
+          "rationale": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "archive_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["bookmark_id", "rationale"],
+        "properties": {
+          "bookmark_id": {"type": "string"},
+          "rationale": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "prompt_injection_detected": {"type": "boolean"},
+    "prompt_injection_evidence": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"type": "string", "maxLength": 300}
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bookmark-automation/backlog/v1",
+  "type": "object",
+  "required": ["coverage", "items", "promotion_candidates", "prompt_injection_detected", "prompt_injection_evidence"],
+  "properties": {
+    "coverage": {
+      "type": "object",
+      "required": ["input_count", "processed_bookmark_ids", "omitted_bookmark_ids"],
+      "properties": {
+        "input_count": {"type": "integer", "minimum": 0},
+        "processed_bookmark_ids": {"type": "array", "items": {"type": "string"}},
+        "omitted_bookmark_ids": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["bookmark_id", "summary", "source_note", "knowledge_disposition"],
+        "properties": {
+          "bookmark_id": {"type": "string"},
+          "summary": {"type": "string"},
+          "source_note": {
+            "type": "object",
+            "required": ["title", "source_type", "source_url", "key_claims", "provenance"],
+            "properties": {
+              "title": {"type": "string", "maxLength": 240},
+              "source_type": {"enum": ["article", "tweet", "thread", "video", "other"]},
+              "source_url": {"type": ["string", "null"]},
+              "key_claims": {"type": "array", "items": {"type": "string"}},
+              "provenance": {
+                "type": "object",
+                "required": ["input_revision", "content_status", "recall_status"],
+                "properties": {
+                  "input_revision": {"type": "string"},
+                  "content_status": {"enum": ["available", "partial", "missing", "not_applicable"]},
+                  "recall_status": {"enum": ["available", "partial", "missing"]}
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "knowledge_disposition": {"enum": ["conceptual", "episodic", "mixed"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "promotion_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["concept", "bookmark_ids", "rationale"],
+        "properties": {
+          "concept": {"type": "string"},
+          "bookmark_ids": {"type": "array", "items": {"type": "string"}},
+          "rationale": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "prompt_injection_detected": {"type": "boolean"},
+    "prompt_injection_evidence": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {"type": "string", "maxLength": 300}
+    }
+  },
+  "additionalProperties": false
+}
