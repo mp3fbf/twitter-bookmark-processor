@@ -36,6 +36,16 @@ erro absoluto e compara a regra experimental `priority >= 2` nos dois lados.
 Casos relevantes rebaixados são listados com URL para revisão. O campo
 `confidence` nunca é tratado como probabilidade de acerto.
 
+Na calibração de 20/09/2026, ficou evidente que o corte da média em 2 rebaixava
+itens cujo nível mais provável continuava sendo 2. Antes de qualquer chamada do
+holdout, foi congelado `analysis-plan.json`: a comparação principal usa o nível
+escolhido pelo baseline e a moda da distribuição Jev (empates favorecem o nível
+menor). Ambos consideram importantes os níveis 2 e 3. A média Jev permanece
+como nota para ordenar a fila, e o corte original é preservado no relatório
+como diagnóstico da diferença de formato. A rubrica, os inputs e os modelos
+permaneceram iguais. Os campos `modal_*` descrevem essa comparação de níveis;
+os campos originais continuam descrevendo o corte na média.
+
 ## Preparação e execução na Hetzner
 
 Execute a partir da raiz do repositório. A preparação e o relatório são locais.
@@ -92,6 +102,19 @@ do runner/CLI. Logo, a comparação mede as rotas disponíveis no workspace, nã
 latência pura dos modelos. Relate tamanho e cobertura do holdout, falhas e
 divergências antes de propor qualquer adoção. Examine também os casos em
 português: esta versão não possui rótulos humanos de idioma ou qualidade.
+
+Para gerar figuras estáticas (desktop e celular) e uma tabela CSV de um split
+completo, use `matplotlib` no ambiente de análise. Esse pacote é opcional e não
+entra nos workers de produção:
+
+```bash
+MPLCONFIGDIR=/tmp/jev-matplotlib python3 -m experiments.jev_bookmarks.plot_results \
+  --data /workspace/_dev-worktrees/twitter-bookmark-processor/jev-pilot-data \
+  --out /workspace/_inbox/jev-bookmark-pilot-20260920 --split holdout
+```
+
+As figuras mostram distribuições dos tempos por item e concordância entre
+modelos. O CSV mantém os identificadores e decisões para auditar divergências.
 
 ## Escopo e controles
 

@@ -199,3 +199,65 @@ def test_paired_metrics_include_missed_important_items():
     assert result["jev_below_priority_two_ids"] == ["a"]
     assert result["priority_mean_absolute_difference"] == 1
     assert pilot.paired_metrics([]) == {"n": 0}
+
+
+def test_modal_level_keeps_priority_two_when_expected_score_is_below_two():
+    baseline = {
+        "prediction": {"topic": "ai", "priority": 2, "needs_context": True},
+        "elapsed_seconds": 5,
+    }
+    jev = {
+        "prediction": {"topic": "ai", "priority": 1.75, "needs_context": True},
+        "elapsed_seconds": 0.7,
+        "response": {
+            "answers": {"priority": {"probabilities": {"0": 0.07, "1": 0.15, "2": 0.74, "3": 0.04}}}
+        },
+    }
+    metrics = pilot.paired_metrics([("a", baseline, jev)])
+    assert metrics["baseline_important_recall"] == 0
+    assert metrics["modal_priority_agreement"] == 1
+    assert metrics["modal_important_recall"] == 1
+    assert metrics["modal_missed_important_ids"] == []
+
+
+def test_modal_tie_uses_lower_level_without_looking_at_baseline():
+    record = {
+        "response": {
+            "answers": {"priority": {"probabilities": {"0": 0, "1": 0.5, "2": 0.5, "3": 0}}}
+        }
+    }
+    assert pilot.priority_level(record) == 1
+
+
+def test_report_lists_modal_disagreement_even_with_small_difference_in_mean(sample, monkeypatch):
+    out, _ = sample
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+
+    def response(row, rubric, key):
+        body = valid_response(rubric)
+        body["answers"]["priority"].update(
+            {
+                "score": 1.37,
+                "probabilities": {"0": 0.07, "1": 0.5, "2": 0.42, "3": 0.01},
+            }
+        )
+        return body
+
+    monkeypatch.setattr(pilot, "jev_call", response)
+    monkeypatch.setattr(
+        pilot,
+        "baseline_call",
+        lambda *a: {
+            "model": "test",
+            "prediction": {
+                "topic": "ai_software",
+                "priority": 2,
+                "needs_context": True,
+            },
+        },
+    )
+    pilot.run(out, "baseline", None, "all", 0.10)
+    pilot.run(out, "jev", None, "all", 0.10)
+    result = pilot.report(out)
+    assert len(result["disagreements"]) == 2
+    assert all(r["jev_priority_level"] == 1 for r in result["disagreements"])

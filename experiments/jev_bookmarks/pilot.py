@@ -351,14 +351,46 @@ def run(out, provider, limit, split, budget):
                 raise ValueError("Run stopped after a failed request; inspect the local receipt.")
 
 
+def priority_level(record):
+    """Compare the baseline's chosen level with Jev's modal level, not its mean."""
+    if "response" not in record:
+        level = record["prediction"]["priority"]
+        if type(level) is not int or not 0 <= level <= 3:
+            raise ValueError("A chosen baseline priority level must be an integer.")
+        return level
+    probabilities = record["response"]["answers"]["priority"]["probabilities"]
+    if set(probabilities) != {"0", "1", "2", "3"}:
+        raise ValueError("Missing Jev priority distribution.")
+    for probability in probabilities.values():
+        number(probability, 0, 1)
+    return int(min(probabilities, key=lambda level: (-probabilities[level], int(level))))
+
+
 def paired_metrics(pairs):
     if not pairs:
         return {"n": 0}
     n = len(pairs)
     important = [p for p in pairs if p[1]["prediction"]["priority"] >= 2]
     missed = [p[0] for p in important if p[2]["prediction"]["priority"] < 2]
+    modal_missed = [p[0] for p in important if priority_level(p[2]) < 2]
+    modal_selected = [p for p in pairs if priority_level(p[2]) >= 2]
+    modal_false_positive = [p[0] for p in modal_selected if priority_level(p[1]) < 2]
     return {
         "n": n,
+        "modal_priority_agreement": sum(priority_level(a) == priority_level(b) for _, a, b in pairs)
+        / n,
+        "modal_important_recall": (len(important) - len(modal_missed)) / len(important)
+        if important
+        else None,
+        "modal_important_precision": (len(modal_selected) - len(modal_false_positive))
+        / len(modal_selected)
+        if modal_selected
+        else None,
+        "modal_missed_important_ids": modal_missed,
+        "modal_added_important_ids": modal_false_positive,
+        "modal_confusion": dict(
+            Counter(f"{priority_level(a)}->{priority_level(b)}" for _, a, b in pairs)
+        ),
         "topic_agreement": sum(
             a["prediction"]["topic"] == b["prediction"]["topic"] for _, a, b in pairs
         )
@@ -428,9 +460,17 @@ def report(out):
         for split in ("calibration", "holdout")
     }
     summary["disagreements"] = [
-        {"id": key, "url": by_id[key]["url"], "baseline": a["prediction"], "jev": b["prediction"]}
+        {
+            "id": key,
+            "url": by_id[key]["url"],
+            "baseline": a["prediction"],
+            "jev": b["prediction"],
+            "baseline_priority_level": priority_level(a),
+            "jev_priority_level": priority_level(b),
+        }
         for key, a, b in pairs
         if a["prediction"]["topic"] != b["prediction"]["topic"]
+        or priority_level(a) != priority_level(b)
         or abs(a["prediction"]["priority"] - b["prediction"]["priority"]) >= 1
         or a["prediction"]["needs_context"] != b["prediction"]["needs_context"]
     ]
