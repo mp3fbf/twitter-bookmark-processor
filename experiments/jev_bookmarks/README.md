@@ -39,15 +39,19 @@ Casos relevantes rebaixados são listados com URL para revisão. O campo
 ## Preparação e execução na Hetzner
 
 Execute a partir da raiz do repositório. A preparação e o relatório são locais.
-Os arquivos pessoais gerados ficam fora do Git, com permissões privadas:
+Os arquivos pessoais gerados ficam fora do Git e do Syncthing, com permissões
+privadas. O diretório `_dev-worktrees` já é excluído da sincronização pelo
+contrato local. Logs em andamento precisam ficar nesse local; o lock de um
+host não impede que outro peer substitua um JSONL sincronizado. Publique somente
+snapshots encerrados em `_inbox`, preservando a área de execução:
 
 ```bash
 python3 -m experiments.jev_bookmarks.pilot prepare \
   --db /workspace/twitter-bookmark-processor/data/bookmark-automation.sqlite3 \
-  --out /workspace/_inbox/jev-bookmark-pilot-20260919
+  --out /workspace/_dev-worktrees/twitter-bookmark-processor/jev-pilot-data
 
 python3 -m experiments.jev_bookmarks.pilot baseline \
-  --out /workspace/_inbox/jev-bookmark-pilot-20260919 --limit 1
+  --out /workspace/_dev-worktrees/twitter-bookmark-processor/jev-pilot-data --limit 1
 ```
 
 O primeiro baseline é um canário real de contrato, não uma medida de qualidade.
@@ -62,7 +66,7 @@ usa somente o endpoint oficial, com modelo fixado em `jev-1.13.0`:
 
 ```bash
 python3 -m experiments.jev_bookmarks.pilot jev \
-  --out /workspace/_inbox/jev-bookmark-pilot-20260919 --limit 1
+  --out /workspace/_dev-worktrees/twitter-bookmark-processor/jev-pilot-data --limit 1
 ```
 
 Depois de conferir o canário, rode os dois comandos sem `--limit` para completar
@@ -80,7 +84,7 @@ oculto nem concorrência entre execuções da mesma pasta.
 
 ```bash
 python3 -m experiments.jev_bookmarks.pilot report \
-  --out /workspace/_inbox/jev-bookmark-pilot-20260919
+  --out /workspace/_dev-worktrees/twitter-bookmark-processor/jev-pilot-data
 ```
 
 Tempos incluem rede e overhead do cliente. No baseline também incluem startup
